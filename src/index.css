@@ -1,0 +1,191 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 210 15% 20%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 210 15% 20%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 210 15% 20%;
+
+    /* Medical Teal Primary */
+    --primary: 180 65% 45%;
+    --primary-foreground: 0 0% 100%;
+    --primary-light: 180 60% 92%;
+    --primary-glow: 180 70% 50%;
+
+    /* Soft Blue Secondary */
+    --secondary: 210 75% 55%;
+    --secondary-foreground: 0 0% 100%;
+    --secondary-light: 210 70% 95%;
+
+    /* Mint Green Accent */
+    --accent: 150 60% 50%;
+    --accent-foreground: 0 0% 100%;
+    --accent-light: 150 55% 95%;
+
+    --muted: 210 30% 96%;
+    --muted-foreground: 210 15% 45%;
+
+    --success: 150 60% 50%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 45 90% 60%;
+    --warning-foreground: 0 0% 100%;
+
+    --destructive: 0 70% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 25% 90%;
+    --input: 210 25% 90%;
+    --ring: 180 65% 45%;
+
+    --radius: 0.75rem;
+
+    /* Glass Effects */
+    --glass-bg: 0 0% 100% / 0.7;
+    --glass-border: 210 25% 90% / 0.3;
+
+    /* Medical Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(180 65% 45%), hsl(180 70% 55%));
+    --gradient-secondary: linear-gradient(135deg, hsl(210 75% 55%), hsl(210 80% 65%));
+    --gradient-accent: linear-gradient(135deg, hsl(150 60% 50%), hsl(150 65% 60%));
+    --gradient-bg: linear-gradient(180deg, hsl(0 0% 100%), hsl(180 60% 98%));
+
+    /* Shadows */
+    --shadow-sm: 0 2px 8px hsl(180 65% 45% / 0.08);
+    --shadow-md: 0 4px 16px hsl(180 65% 45% / 0.12);
+    --shadow-lg: 0 8px 24px hsl(180 65% 45% / 0.16);
+    --shadow-glow: 0 0 40px hsl(180 70% 50% / 0.2);
+
+    /* Sidebar */
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 210 15% 25%;
+    --sidebar-primary: 180 65% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 180 60% 96%;
+    --sidebar-accent-foreground: 210 15% 25%;
+    --sidebar-border: 210 25% 92%;
+    --sidebar-ring: 180 65% 45%;
+
+    /* Animation */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  }
+
+  .dark {
+    --background: 210 25% 8%;
+    --foreground: 0 0% 95%;
+
+    --card: 210 25% 10%;
+    --card-foreground: 0 0% 95%;
+
+    --popover: 210 25% 10%;
+    --popover-foreground: 0 0% 95%;
+
+    --primary: 180 65% 50%;
+    --primary-foreground: 0 0% 100%;
+    --primary-light: 180 60% 15%;
+    --primary-glow: 180 70% 55%;
+
+    --secondary: 210 75% 60%;
+    --secondary-foreground: 0 0% 100%;
+    --secondary-light: 210 70% 15%;
+
+    --accent: 150 60% 55%;
+    --accent-foreground: 0 0% 100%;
+    --accent-light: 150 55% 15%;
+
+    --muted: 210 25% 15%;
+    --muted-foreground: 210 15% 60%;
+
+    --success: 150 60% 55%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 45 90% 65%;
+    --warning-foreground: 0 0% 100%;
+
+    --destructive: 0 70% 65%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 25% 18%;
+    --input: 210 25% 18%;
+    --ring: 180 65% 50%;
+
+    --glass-bg: 210 25% 10% / 0.7;
+    --glass-border: 210 25% 20% / 0.3;
+
+    --gradient-primary: linear-gradient(135deg, hsl(180 65% 50%), hsl(180 70% 60%));
+    --gradient-secondary: linear-gradient(135deg, hsl(210 75% 60%), hsl(210 80% 70%));
+    --gradient-accent: linear-gradient(135deg, hsl(150 60% 55%), hsl(150 65% 65%));
+    --gradient-bg: linear-gradient(180deg, hsl(210 25% 8%), hsl(180 60% 12%));
+
+    --shadow-sm: 0 2px 8px hsl(0 0% 0% / 0.2);
+    --shadow-md: 0 4px 16px hsl(0 0% 0% / 0.3);
+    --shadow-lg: 0 8px 24px hsl(0 0% 0% / 0.4);
+    --shadow-glow: 0 0 40px hsl(180 70% 50% / 0.3);
+
+    --sidebar-background: 210 25% 10%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-primary: 180 65% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 180 60% 15%;
+    --sidebar-accent-foreground: 0 0% 90%;
+    --sidebar-border: 210 25% 18%;
+    --sidebar-ring: 180 65% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    background: linear-gradient(180deg, hsl(var(--background)), hsl(180 60% 98%));
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/70 backdrop-blur-md border border-white/30 shadow-md;
+  }
+
+  .glass-input {
+    @apply bg-white/50 backdrop-blur-sm border border-white/30 focus:border-primary/50;
+  }
+
+  .medical-gradient {
+    background: var(--gradient-primary);
+  }
+
+  .hover-lift {
+    @apply transition-all duration-300 hover:-translate-y-1 hover:shadow-lg;
+  }
+
+  .smooth-transition {
+    transition: var(--transition-smooth);
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: var(--gradient-primary);
+  }
+
+  .glow-effect {
+    box-shadow: var(--shadow-glow);
+  }
+}

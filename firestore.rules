@@ -1,0 +1,282 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================================
+    // HELPER FUNCTIONS
+    // ============================================================
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if user owns the document (using userId field)
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Check if creating user's own document
+    function isCreatingOwn() {
+      return isAuthenticated() && 
+             request.resource.data.userId == request.auth.uid;
+    }
+    
+    // Check if updating user's own document
+    function isUpdatingOwn() {
+      return isAuthenticated() && 
+             resource.data.userId == request.auth.uid;
+    }
+    
+    // ============================================================
+    // USER PROFILES COLLECTION
+    // Collection: users
+    // Document ID: {userId} (matches auth.uid)
+    // ============================================================
+    match /users/{userId} {
+      // Any authenticated user can read profiles (nutritionists need patient names)
+      allow read: if isAuthenticated();
+      
+      // Users can create their own profile
+      allow create: if isAuthenticated() && userId == request.auth.uid;
+      
+      // Users can update their own profile
+      allow update: if isOwner(userId);
+      
+      // Users can delete their own profile
+      allow delete: if isOwner(userId);
+    }
+    
+    // ============================================================
+    // DIET PLANS COLLECTION
+    // Collection: dietPlans
+    // Fields: userId (required), status, createdAt, etc.
+    // Queries: where('userId', '==', uid), orderBy('createdAt', 'desc')
+    // ============================================================
+    match /dietPlans/{planId} {
+      // Users can read their own diet plans
+      allow read: if isUpdatingOwn();
+      
+      // Users can create diet plans with their userId
+      allow create: if isCreatingOwn();
+      
+      // Users can update their own diet plans
+      allow update: if isUpdatingOwn();
+      
+      // Users can delete their own diet plans
+      allow delete: if isUpdatingOwn();
+    }
+    
+    // ============================================================
+    // RECIPES COLLECTION
+    // Collection: recipes
+    // Fields: userId (required), title, ingredients, etc.
+    // Queries: where('userId', '==', uid), orderBy('createdAt', 'desc')
+    // Special: Users can read ALL recipes (shared resource)
+    // ============================================================
+    match /recipes/{recipeId} {
+      // Anyone authenticated can read all recipes (shared resource)
+      allow read: if isAuthenticated();
+      
+      // Users can create recipes with their userId
+      allow create: if isCreatingOwn();
+      
+      // Users can update their own recipes
+      allow update: if isUpdatingOwn();
+      
+      // Users can delete their own recipes
+      allow delete: if isUpdatingOwn();
+    }
+    
+    // ============================================================
+    // LAB REPORTS COLLECTION
+    // Collection: labReports
+    // Fields: userId (required), labMode, labValues, pdfText,
+    //         aiResponse, riskLevel, sys, createdAt
+    // Queries: where('userId', '==', uid), orderBy('createdAt', 'desc')
+    // ============================================================
+    match /labReports/{reportId} {
+      // Users can read their own lab reports
+      allow read: if isUpdatingOwn();
+      
+      // Users can create lab reports with their userId
+      allow create: if isCreatingOwn();
+      
+      // Users can update their own lab reports
+      allow update: if isUpdatingOwn();
+      
+      // Users can delete their own lab reports
+      allow delete: if isUpdatingOwn();
+    }
+    
+    // ============================================================
+    // PROGRESS LOGS COLLECTION
+    // Collection: progressLogs
+    // Fields: userId (required), date, weight, bmi, etc.
+    // Queries: where('userId', '==', uid), orderBy('date', 'desc')
+    // ============================================================
+    match /progressLogs/{logId} {
+      // Users can read their own progress logs
+      allow read: if isUpdatingOwn();
+      
+      // Users can create progress logs with their userId
+      allow create: if isCreatingOwn();
+      
+      // Users can update their own progress logs
+      allow update: if isUpdatingOwn();
+      
+      // Users can delete their own progress logs
+      allow delete: if isUpdatingOwn();
+    }
+    
+    // ============================================================
+    // AI CHAT HISTORY COLLECTION
+    // Collection: aiChatHistory
+    // Fields: userId (required), role, content, timestamp
+    // Queries: where('userId', '==', uid), orderBy('timestamp', 'asc')
+    // ============================================================
+    match /aiChatHistory/{messageId} {
+      // Users can read their own chat history
+      allow read: if isUpdatingOwn();
+      
+      // Users can create messages with their userId
+      allow create: if isCreatingOwn();
+      
+      // Users can update their own messages
+      allow update: if isUpdatingOwn();
+      
+      // Users can delete their own messages
+      allow delete: if isUpdatingOwn();
+    }
+    
+    // ============================================================
+    // RECIPES HISTORY COLLECTION
+    // Collection: recipes_history
+    // Fields: userId (required), ingredientsInput, generatedRecipes, etc.
+    // Queries: where('userId', '==', uid), orderBy('createdAt', 'desc')
+    // ============================================================
+    match /recipes_history/{entryId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isCreatingOwn();
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // ============================================================
+    // DIET PLANS HISTORY COLLECTION
+    // Collection: dietplans_history
+    // Fields: userId (required), goalType, dailyPlans, etc.
+    // Queries: where('userId', '==', uid), orderBy('createdAt', 'desc')
+    // ============================================================
+    match /dietplans_history/{entryId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isCreatingOwn();
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // ============================================================
+    // NUTRITIONISTS COLLECTION
+    // Collection: nutritionists
+    // Document ID: {nutritionistId} (matches auth.uid)
+    // Fields: uid, name, email, phone, photoURL, qualification, etc.
+    // Any authenticated user can read (public listing);
+    // only the owner (uid == auth.uid) can create / update.
+    // ============================================================
+    match /nutritionists/{nutritionistId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && nutritionistId == request.auth.uid;
+
+      // Owner can update anything; any authenticated user can update only rating fields
+      allow update: if isAuthenticated() &&
+        (
+          nutritionistId == request.auth.uid
+          ||
+          (
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['rating', 'totalReviews', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAuthenticated() && nutritionistId == request.auth.uid;
+    }
+
+    // ============================================================
+    // CONSULTATIONS COLLECTION
+    // Collection: consultations
+    // Fields: userId, nutritionistId, createdAt, lastMessage, etc.
+    // Both the user and the nutritionist in the consultation can
+    // read/write. Messages live in a subcollection.
+    // ============================================================
+    match /consultations/{consultationId} {
+      allow read: if isAuthenticated() &&
+        (resource.data.userId == request.auth.uid ||
+         resource.data.nutritionistId == request.auth.uid);
+
+      allow create: if isAuthenticated() &&
+        (request.resource.data.userId == request.auth.uid ||
+         request.resource.data.nutritionistId == request.auth.uid);
+
+      allow update: if isAuthenticated() &&
+        (resource.data.userId == request.auth.uid ||
+         resource.data.nutritionistId == request.auth.uid);
+
+      // Messages subcollection
+      match /messages/{messageId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated();
+      }
+    }
+
+    // ============================================================
+    // APPOINTMENTS COLLECTION
+    // Collection: appointments
+    // Fields: userId, nutritionistId, date, timeSlot, status, etc.
+    // User can create (with own userId). Both user and nutritionist
+    // can read their own appointments. Nutritionist can update status.
+    // ============================================================
+    match /appointments/{appointmentId} {
+      allow read: if isAuthenticated() &&
+        (resource.data.userId == request.auth.uid ||
+         resource.data.nutritionistId == request.auth.uid);
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid;
+
+      allow update: if isAuthenticated() &&
+        (resource.data.nutritionistId == request.auth.uid ||
+         resource.data.userId == request.auth.uid);
+    }
+
+    // ============================================================
+    // REVIEWS COLLECTION
+    // Collection: reviews
+    // Fields: userId, nutritionistId, appointmentId, rating,
+    //         reviewText, createdAt
+    // Users can create a review (only with their own userId).
+    // Users and the reviewed nutritionist can read reviews.
+    // Reviews cannot be updated or deleted.
+    // ============================================================
+    match /reviews/{reviewId} {
+      // Any authenticated user can read reviews (shown on public profile pages)
+      allow read: if isAuthenticated();
+
+      // Only the review author can create, with validated rating
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.rating is number &&
+        request.resource.data.rating >= 1 &&
+        request.resource.data.rating <= 5;
+
+      allow update, delete: if false;
+    }
+
+    // ============================================================
+    // DEFAULT DENY ALL
+    // Deny access to any other collections not explicitly defined
+    // ============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
