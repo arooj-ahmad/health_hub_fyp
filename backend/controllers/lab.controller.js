@@ -1,14 +1,7 @@
 /**
- * Lab Report Controller
+ * Lab Report Controller — v2 (Data-Aware)
  * ─────────────────────────────────────────────────────────────────────────────
- * Orchestrates lab report analysis:
- *   Request → Validate → (RAG hooks) → Build prompt → AI Service → Parse risk → Respond
- *
- * Ported from: src/modules/labReport/LabAnalyzerService.js
- *
- * NOTE: Image/PDF uploads are NOT handled here yet. The frontend still does
- * PDF text extraction client-side and sends the extracted text. Future work
- * can add multer for direct file upload handling on the backend.
+ * Pipeline: Normalize → Validate → Compute → RAG hooks → AI → Schema Validate → Log → Respond
  */
 
 import { generateAIResponse } from '../services/ai/aiService.js';
@@ -17,17 +10,19 @@ import { retrieve } from '../services/rag/retrievalLayer.js';
 import { injectMetadata } from '../services/rag/metadataInjector.js';
 import { sanitizeInput } from '../utils/promptSanitizer.js';
 import { success, error, send } from '../utils/responseFormatter.js';
+import { validateLabResponse } from '../utils/schemaValidator.js';
+import { logGeneration, createTimer } from '../services/logging/aiLogger.js';
 
-// ── Compute system values (ported from LabDietPrompt.js) ────────────────────
+// ── Compute system values ───────────────────────────────────────────────────
 
-function computeSystemValues(healthProfile = {}) {
-  const weight = parseFloat(healthProfile.weight) || 70;
-  const height = parseFloat(healthProfile.height) || 170;
-  const age = parseInt(healthProfile.age, 10) || 30;
-  const gender = (healthProfile.gender || 'male').toLowerCase();
+function computeSystemValues(profile = {}) {
+  const weight = parseFloat(profile.weight) || 70;
+  const height = parseFloat(profile.height) || 170;
+  const age = parseInt(profile.age, 10) || 30;
+  const gender = (profile.gender || 'male').toLowerCase();
 
   const heightM = height / 100;
-  const bmi = (weight / (heightM * heightM)).toFixed(1);
+  const bmi = parseFloat((weight / (heightM * heightM)).toFixed(1));
 
   let bmiCategory = 'Normal';
   if (bmi < 18.5) bmiCategory = 'Underweight';
@@ -35,7 +30,6 @@ function computeSystemValues(healthProfile = {}) {
   else if (bmi < 30) bmiCategory = 'Overweight';
   else bmiCategory = 'Obese';
 
-  // BMR (Mifflin-St Jeor)
   let bmr;
   if (gender === 'female') {
     bmr = 10 * weight + 6.25 * height - 5 * age - 161;
@@ -43,7 +37,7 @@ function computeSystemValues(healthProfile = {}) {
     bmr = 10 * weight + 6.25 * height - 5 * age + 5;
   }
 
-  return { weight, height, age, gender, bmi: parseFloat(bmi), bmiCategory, bmr: Math.round(bmr) };
+  return { weight, height, age, gender, bmi, bmiCategory, bmr: Math.round(bmr) };
 }
 
 // ── Build lab analysis prompt ───────────────────────────────────────────────
@@ -56,7 +50,6 @@ BMI: ${sys.bmi} (${sys.bmiCategory})
 BMR: ${sys.bmr} kcal/day`;
 
   let labDataSection = '';
-
   if (labMode === 'MANUAL' && labValues) {
     const entries = Object.entries(labValues)
       .filter(([_, v]) => v !== '' && v !== null && v !== undefined)
@@ -94,24 +87,26 @@ Provide your analysis in a clear, organized format with sections:
 }
 
 export async function analyzeLabReport(req, res) {
-  try {
-    const { labMode, labValues, pdfText, healthProfile } = req.body;
+  const timer = createTimer();
 
-    // ── Validate ──
-    if (!labMode) {
+  try {
+    const n = req.normalizedBody;
+    const rawInput = req.body;
+
+    if (!n || !n.labMode) {
       return send(res, error('Missing labMode (MANUAL or PDF)', 400));
     }
 
-    if (labMode === 'MANUAL' && (!labValues || Object.keys(labValues).length === 0)) {
+    if (n.labMode === 'MANUAL' && (!n.labValues || Object.keys(n.labValues).length === 0)) {
       return send(res, error('Missing lab values for manual mode', 400));
     }
 
-    if (labMode === 'PDF' && !pdfText) {
-      return send(res, error('Missing pdfText for PDF mode. Extract text client-side before sending.', 400));
+    if (n.labMode === 'PDF' && !n.pdfText) {
+      return send(res, error('Missing pdfText for PDF mode.', 400));
     }
 
     const userId = req.user?.uid || 'anonymous';
-    const sys = computeSystemValues(healthProfile);
+    const sys = computeSystemValues(n.healthProfile);
 
     // ── RAG hooks ──
     const context = await buildContext({ userId, type: 'lab' });
@@ -119,19 +114,14 @@ export async function analyzeLabReport(req, res) {
 
     // ── Build prompt ──
     const rawPrompt = buildLabPrompt({
-      labMode,
-      labValues,
-      pdfText: sanitizeInput(pdfText || '', 20000),
-      sys,
+      labMode: n.labMode, labValues: n.labValues,
+      pdfText: sanitizeInput(n.pdfText || '', 20000), sys,
     });
     const prompt = injectMetadata({ prompt: rawPrompt, context, retrievedDocs });
 
     // ── Call AI ──
     const aiResponse = await generateAIResponse({
-      prompt,
-      type: 'lab',
-      userId,
-      options: { maxTokens: 3000 },
+      prompt, type: 'lab', userId, options: { maxTokens: 3000 },
     });
 
     let aiContent = '';
@@ -150,12 +140,36 @@ export async function analyzeLabReport(req, res) {
       riskLevel = 'medium';
     }
 
-    return send(res, success({
-      aiResponse: aiContent,
-      riskLevel,
-      systemValues: sys,
-    }));
+    const responseData = { aiResponse: aiContent, riskLevel, systemValues: sys };
+
+    // ── Schema validation ──
+    const validation = validateLabResponse(responseData);
+    const latencyMs = timer.stop();
+
+    // ── Async logging ──
+    logGeneration({
+      userId, type: 'lab', rawInput, normalizedInput: n,
+      systemComputed: sys, latencyMs,
+      success: aiResponse?.success || false,
+      error: aiResponse?.success ? null : (aiResponse?.error || 'Lab analysis failed'),
+      outputPreview: aiContent.substring(0, 500),
+      metadata: {
+        labMode: n.labMode, riskLevel,
+        labValueCount: n.labMode === 'MANUAL' ? Object.keys(n.labValues || {}).length : 0,
+        validationErrors: validation.errors,
+      },
+    });
+
+    return send(res, success(validation.data));
+
   } catch (err) {
+    const latencyMs = timer.stop();
+    logGeneration({
+      userId: req.user?.uid || 'anonymous', type: 'lab',
+      rawInput: req.body, normalizedInput: req.normalizedBody || {},
+      systemComputed: {}, latencyMs, success: false,
+      error: err.message, outputPreview: '',
+    });
     console.error('[lab] Unhandled error:', err);
     return send(res, error('Lab analysis failed. Please try again later.'));
   }

@@ -113,6 +113,12 @@ export function validateDietResponse(responseData) {
     if (result.data) validatedPlans.push(result.data);
   }
 
+  // Validate sources array
+  const sources = validateSources(responseData.sources);
+
+  // Validate confidence score
+  const confidence = validateConfidence(responseData.confidence);
+
   const data = {
     dailyPlans: validatedPlans,
     explanation: typeof responseData.explanation === 'string' ? responseData.explanation : '',
@@ -120,6 +126,8 @@ export function validateDietResponse(responseData) {
     disclaimer: typeof responseData.disclaimer === 'string'
       ? responseData.disclaimer
       : 'This diet plan is for informational purposes only and does not replace professional medical advice.',
+    sources,
+    confidence,
   };
 
   return {
@@ -296,6 +304,104 @@ export function validateLabResponse(responseData) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// SOURCE & CONFIDENCE VALIDATORS (shared across schemas)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Validate a sources array.
+ * Each source should have { id, title, source }. Extra fields are allowed.
+ *
+ * @param {any} sources - Raw sources data
+ * @returns {Array<{ id: string, title: string, source: string }>}
+ */
+export function validateSources(sources) {
+  if (!Array.isArray(sources)) return [];
+
+  return sources
+    .filter((s) => s && typeof s === 'object')
+    .map((s) => ({
+      id: String(s.id || ''),
+      title: String(s.title || s.name || ''),
+      source: String(s.source || ''),
+      ...(s.section ? { section: String(s.section) } : {}),
+      ...(s.version ? { version: String(s.version) } : {}),
+      ...(s.type ? { type: String(s.type) } : {}),
+    }))
+    .filter((s) => s.id || s.title || s.source);
+}
+
+/**
+ * Validate a confidence score (0.0 to 1.0).
+ *
+ * @param {any} confidence - Raw confidence value
+ * @returns {number} Clamped [0, 1]
+ */
+export function validateConfidence(confidence) {
+  const num = parseFloat(confidence);
+  if (isNaN(num)) return 0.0;
+  return Math.min(1.0, Math.max(0.0, num));
+}
+
+/**
+ * Validate a generic RAG-aware response schema.
+ * This is the standard output shape for knowledge-aware endpoints:
+ *
+ * {
+ *   answer: string,
+ *   recommendations: string[],
+ *   nutritionSummary: { calories, protein, carbs, fat },
+ *   sources: [{ id, title, source }],
+ *   confidence: 0.0 - 1.0
+ * }
+ *
+ * @param {object} responseData
+ * @returns {{ valid: boolean, data: object, errors: string[] }}
+ */
+export function validateSourcedResponse(responseData) {
+  const errors = [];
+
+  if (!responseData || typeof responseData !== 'object') {
+    return { valid: false, data: null, errors: ['Response is not an object'] };
+  }
+
+  const answer = typeof responseData.answer === 'string'
+    ? responseData.answer.trim()
+    : '';
+  if (!answer) errors.push('Missing or empty answer');
+
+  const recommendations = Array.isArray(responseData.recommendations)
+    ? responseData.recommendations.filter((r) => typeof r === 'string' && r.trim())
+    : [];
+
+  const nutritionSummary = responseData.nutritionSummary && typeof responseData.nutritionSummary === 'object'
+    ? {
+        calories: Number(responseData.nutritionSummary.calories) || 0,
+        protein: Number(responseData.nutritionSummary.protein) || 0,
+        carbs: Number(responseData.nutritionSummary.carbs) || 0,
+        fat: Number(responseData.nutritionSummary.fat) || 0,
+        fiber: Number(responseData.nutritionSummary.fiber) || 0,
+      }
+    : null;
+
+  const sources = validateSources(responseData.sources);
+  const confidence = validateConfidence(responseData.confidence);
+
+  const data = {
+    answer: answer || 'Unable to generate a response. Please try again.',
+    recommendations,
+    ...(nutritionSummary ? { nutritionSummary } : {}),
+    sources,
+    confidence,
+  };
+
+  return {
+    valid: errors.length === 0,
+    data,
+    errors,
+  };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // GENERIC VALIDATOR
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -304,12 +410,13 @@ const VALIDATORS = {
   recipe: validateRecipeResponse,
   chat: validateChatResponse,
   lab: validateLabResponse,
+  sourced: validateSourcedResponse,
 };
 
 /**
  * Validate an AI response for a given type.
  *
- * @param {string} type - 'diet' | 'recipe' | 'chat' | 'lab'
+ * @param {string} type - 'diet' | 'recipe' | 'chat' | 'lab' | 'sourced'
  * @param {object} responseData - The response data to validate
  * @returns {{ valid: boolean, data: object, errors: string[] }}
  */
@@ -335,4 +442,7 @@ export default {
   validateRecipeResponse,
   validateChatResponse,
   validateLabResponse,
+  validateSourcedResponse,
+  validateSources,
+  validateConfidence,
 };

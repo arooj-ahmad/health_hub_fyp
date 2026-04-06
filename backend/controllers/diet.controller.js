@@ -1,20 +1,24 @@
 /**
- * Diet Controller
+ * Diet Controller — v3 (Knowledge-Aware)
  * ─────────────────────────────────────────────────────────────────────────────
- * Orchestrates diet plan generation:
- *   Request → Validate → (RAG hooks) → Build prompt → AI Service → Format → Respond
+ * Full RAG-ready pipeline:
+ *   Normalize → Snapshot → Compute → contextBuilder(KB) → metadataInjector
+ *   → Build Prompt (with context + source instructions) → AI Service
+ *   → Schema Validate (with sources + confidence) → Async Log → Respond
  *
- * Ported from: src/modules/diet/services/dietAIService.js
+ * This is the REFERENCE IMPLEMENTATION for the knowledge-aware pattern.
  */
 
 import { generateAIResponse } from '../services/ai/aiService.js';
 import { buildContext } from '../services/rag/contextBuilder.js';
 import { retrieve } from '../services/rag/retrievalLayer.js';
-import { injectMetadata } from '../services/rag/metadataInjector.js';
-import { sanitizeInput, cleanAIJSON } from '../utils/promptSanitizer.js';
+import { injectMetadata, formatSourcesForPrompt } from '../services/rag/metadataInjector.js';
+import { cleanAIJSON } from '../utils/promptSanitizer.js';
 import { success, error, send } from '../utils/responseFormatter.js';
+import { validateDietResponse } from '../utils/schemaValidator.js';
+import { logGeneration, createTimer } from '../services/logging/aiLogger.js';
 
-// ── Meal slot configuration (ported from frontend) ──────────────────────────
+// ── Meal slot configuration ────────────────────────────────────────────────
 
 const MEAL_SLOTS = [
   { key: 'breakfast', label: 'Breakfast' },
@@ -38,7 +42,6 @@ function calcDailyMacros(calories, goal) {
     'Weight Gain': { protein: 0.25, carbs: 0.50, fat: 0.25 },
     'Maintain': { protein: 0.25, carbs: 0.50, fat: 0.25 },
   };
-
   const r = ratios[goal] || ratios['Maintain'];
   return {
     protein: Math.round((calories * r.protein) / 4),
@@ -47,7 +50,7 @@ function calcDailyMacros(calories, goal) {
   };
 }
 
-// ── Prompt builder (ported from frontend dietAIService.js) ──────────────────
+// ── Prompt Builder (context-aware) ──────────────────────────────────────────
 
 function buildDietDayPrompt({
   age, gender, height, weight,
@@ -57,20 +60,20 @@ function buildDietDayPrompt({
   exclusionList, conditionAdaptations,
   durationDays, dailyMacros, mealCalories,
   dayNumber,
+  sourceInstructions,
 }) {
   const condRulesText = conditionAdaptations.length > 0
     ? conditionAdaptations.map((a) => `• ${a.label}: ${a.rules.join('; ')}`).join('\n')
     : 'None';
-
-  const exclusionText = exclusionList.length > 0
-    ? exclusionList.join(', ')
-    : 'None';
-
+  const exclusionText = exclusionList.length > 0 ? exclusionList.join(', ') : 'None';
   const mealSlotText = MEAL_SLOTS
     .map((slot) => `${slot.key} (${slot.label}): ~${mealCalories[slot.key]} kcal`)
     .join('\n');
 
   return `You are an advanced AI Diet Planning Assistant for SmartNutrition Pakistan.
+You MUST use the SYSTEM CONTEXT (KNOWLEDGE BASE) provided above when generating meals.
+If clinical guidelines are provided, follow them strictly.
+If nutrition reference data is provided, use accurate calorie/macro values from it.
 
 Generate a diet plan for Day ${dayNumber} of ${durationDays}.
 
@@ -103,11 +106,13 @@ IMPORTANT RULES:
 2. Use common PAKISTANI foods: roti, daal, rice, sabzi, chicken, yogurt, etc.
 3. Meals must be affordable and practical for Pakistani households.
 4. Respect ALL allergies — zero tolerance.
-5. Adjust for medical conditions as per the rules above.
+5. Adjust for medical conditions as per the clinical guidelines above.
 6. Control oil, sugar, salt per health needs.
 7. Keep each meal's calories close to the assigned target above.
 8. Use simple English with Pakistani food names in parentheses.
 9. Make Day ${dayNumber} distinct from other days while staying within the same calorie target.
+10. If CLINICAL GUIDELINES say to AVOID a food, NEVER include it.
+11. If CLINICAL GUIDELINES RECOMMEND a food, prefer including it.
 
 Return ONLY valid JSON in this exact format:
 
@@ -129,13 +134,18 @@ Return ONLY valid JSON in this exact format:
   "totalCalories": 1800,
   "totalProtein": 90,
   "totalCarbs": 200,
-  "totalFat": 60
+  "totalFat": 60,
+  "sources": [
+    { "id": "source_id", "title": "Source Name", "source": "ADA_2025" }
+  ],
+  "confidence": 0.85
 }
 
 The response MUST start with { and end with }.
 Do NOT include markdown code blocks.
 Do NOT include explanation text before or after the JSON.
 Include all 4 meal slots: breakfast, lunch, snack, dinner.
+${sourceInstructions}
 If any meal detail is uncertain, still return valid JSON with placeholder-safe values.`;
 }
 
@@ -182,52 +192,85 @@ function normaliseDailyPlan(dayPlan = {}, expectedDay) {
   };
 }
 
-// ── Controller ──────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// CONTROLLER — Knowledge-Aware Pipeline
+// ═════════════════════════════════════════════════════════════════════════════
 
 export async function generateDietPlan(req, res) {
-  try {
-    const {
-      profile, computed, selectedGoal,
-      durationDays, conditions, allergies,
-      conditionAdaptations = [], exclusionList = [],
-    } = req.body;
+  const timer = createTimer();
 
-    // ── Validate required fields ──
-    if (!profile || !computed || !durationDays) {
+  try {
+    // ── 1. Read normalized input ──
+    const n = req.normalizedBody;
+    const rawInput = req.body;
+
+    if (!n || !n.profile || !n.computed || !n.durationDays) {
       return send(res, error('Missing required fields: profile, computed, durationDays', 400));
     }
 
     const userId = req.user?.uid || 'anonymous';
-    const goal = selectedGoal || computed.goal || 'Maintain';
-    const calories = computed.cal || 2000;
+
+    // ── 2. Compute system values ──
+    const goal = n.selectedGoal;
+    const calories = n.computed.cal;
     const dailyMacros = calcDailyMacros(calories, goal);
     const mealCalories = distributeMealCalories(calories);
 
-    // ── RAG Pipeline (placeholders) ──
-    const context = await buildContext({ userId, type: 'diet' });
-    const retrievedDocs = await retrieve({ query: `${goal} diet plan`, type: 'diet' });
-
-    const promptContext = {
-      age: profile.age, gender: profile.gender,
-      height: profile.height, weight: profile.weight,
-      bmi: computed.bmi, bmiCategory: computed.cat,
-      goal, targetWeight: computed.tw,
-      dailyCalories: calories,
-      activityLevel: profile.activityLevel,
-      conditions: sanitizeInput(conditions || ''),
-      allergies: sanitizeInput(allergies || ''),
-      exclusionList, conditionAdaptations,
-      durationDays, dailyMacros, mealCalories,
+    const systemComputed = {
+      bmi: n.computed.bmi, bmiCategory: n.computed.cat,
+      goal, targetWeight: n.computed.tw,
+      dailyCalories: calories, dailyMacros, mealCalories,
     };
 
-    // ── Generate day-by-day ──
+    // ── 3. Knowledge Base Context ──
+    const context = await buildContext({
+      userId,
+      type: 'diet',
+      profile: n.profile,
+      conditionIds: n.conditionsArray || [],
+      goal,
+      calories,
+    });
+
+    // ── 4. Retrieval Layer (future vector search) ──
+    const retrievedDocs = await retrieve({ query: `${goal} diet plan`, type: 'diet' });
+
+    // ── 5. Metadata Injection ──
+    const sourceInstructions = formatSourcesForPrompt(context.sources);
+
+    const promptContext = {
+      age: n.profile.age, gender: n.profile.gender,
+      height: n.profile.height, weight: n.profile.weight,
+      bmi: n.computed.bmi, bmiCategory: n.computed.cat,
+      goal, targetWeight: n.computed.tw,
+      dailyCalories: calories,
+      activityLevel: n.profile.activityLevel,
+      conditions: n.conditions,
+      allergies: n.allergies,
+      exclusionList: n.exclusionList,
+      conditionAdaptations: n.conditionAdaptations,
+      durationDays: n.durationDays,
+      dailyMacros, mealCalories,
+      sourceInstructions,
+    };
+
+    // ── 6. Generate day-by-day ──
     const dailyPlans = [];
+    const aiSources = [];
 
-    for (let day = 1; day <= durationDays; day++) {
+    for (let day = 1; day <= n.durationDays; day++) {
       const rawPrompt = buildDietDayPrompt({ ...promptContext, dayNumber: day });
-      const prompt = injectMetadata({ prompt: rawPrompt, context, retrievedDocs });
 
-      const aiResponse = await generateAIResponse({ prompt, type: 'diet', userId });
+      // Inject knowledge context into prompt
+      const { enrichedPrompt, sources } = injectMetadata({
+        prompt: rawPrompt,
+        context,
+        retrievedDocs,
+      });
+
+      const aiResponse = await generateAIResponse({
+        prompt: enrichedPrompt, type: 'diet', userId,
+      });
 
       if (!aiResponse?.success) {
         console.warn(`[diet] AI skipped for day ${day}:`, aiResponse?.error);
@@ -241,45 +284,98 @@ export async function generateDietPlan(req, res) {
         const parsed = JSON.parse(cleaned);
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           dailyPlans.push(normaliseDailyPlan(parsed, day));
+
+          // Collect AI-reported sources
+          if (Array.isArray(parsed.sources)) {
+            aiSources.push(...parsed.sources);
+          }
         }
       } catch (parseErr) {
         console.warn(`[diet] JSON parse failed for day ${day}:`, parseErr.message);
       }
     }
 
-    if (dailyPlans.length === 0) {
-      return send(res, success({
-        dailyPlans: [],
-        explanation: 'AI service temporarily unavailable. Please try again later.',
-        tips: ['Please refresh and try again.'],
-        disclaimer: 'This diet plan is for informational purposes only and does not replace professional medical advice.',
-      }));
-    }
-
-    dailyPlans.sort((a, b) => a.day - b.day);
-
-    // ── Build explanation and tips ──
-    const explanation = `This ${durationDays}-day plan is aligned with your ${goal.toLowerCase()} goal, ${computed.cat} BMI category, and daily target of ${calories} kcal. Each day keeps the meal structure consistent so the plan is easier to follow.`;
+    // ── 7. Build complete response ──
+    const explanation = dailyPlans.length > 0
+      ? `This ${n.durationDays}-day plan is aligned with your ${goal.toLowerCase()} goal, ${n.computed.cat} BMI category, and daily target of ${calories} kcal. Each day keeps the meal structure consistent so the plan is easier to follow.`
+      : 'AI service temporarily unavailable. Please try again later.';
 
     const tips = [
       `Follow portion sizes closely to stay on track with your ${goal.toLowerCase()} target.`,
       'Drink water regularly throughout the day and avoid sugary drinks.',
       'Prepare meals in advance where possible.',
     ];
-    if (allergies) tips.push(`Double-check ingredients to avoid these allergens: ${allergies}.`);
-    if (conditions) tips.push(`Monitor how meals affect your health conditions: ${conditions}.`);
+    if (n.allergies) tips.push(`Double-check ingredients to avoid these allergens: ${n.allergies}.`);
+    if (n.conditions) tips.push(`Monitor how meals affect your health conditions: ${n.conditions}.`);
 
-    // ── Firestore save placeholder ──
-    // await firestoreService.saveDietPlan(userId, { dailyPlans, explanation, tips, ... });
+    // Merge knowledge base sources + AI-reported sources
+    const mergedSources = _deduplicateSources([...context.sources, ...aiSources]);
 
-    return send(res, success({
+    const responseData = {
       dailyPlans,
       explanation,
       tips: tips.slice(0, 4),
       disclaimer: 'This diet plan is for informational purposes only and does not replace professional medical advice.',
-    }));
+      sources: mergedSources,
+      confidence: dailyPlans.length > 0
+        ? Math.min(0.9, 0.5 + (context.guidelines.length * 0.1) + (context.nutrition.length * 0.05))
+        : 0.0,
+    };
+
+    // ── 8. Schema validation ──
+    const validation = validateDietResponse(responseData);
+    if (validation.errors.length > 0) {
+      console.warn('[diet] Schema validation warnings:', validation.errors);
+    }
+
+    const latencyMs = timer.stop();
+
+    // ── 9. Async logging ──
+    logGeneration({
+      userId, type: 'diet', rawInput, normalizedInput: n,
+      systemComputed,
+      latencyMs,
+      success: dailyPlans.length > 0,
+      error: dailyPlans.length === 0 ? 'No plans generated' : null,
+      outputPreview: JSON.stringify(dailyPlans[0] || {}).substring(0, 500),
+      metadata: {
+        durationDays: n.durationDays,
+        plansGenerated: dailyPlans.length,
+        validationErrors: validation.errors,
+        contextStats: {
+          guidelines: context.guidelines.length,
+          nutrition: context.nutrition.length,
+          recipes: context.recipes.length,
+          sources: mergedSources.length,
+        },
+        confidence: responseData.confidence,
+      },
+    });
+
+    // ── 10. Respond ──
+    return send(res, success(validation.data));
+
   } catch (err) {
+    const latencyMs = timer.stop();
+    logGeneration({
+      userId: req.user?.uid || 'anonymous', type: 'diet',
+      rawInput: req.body, normalizedInput: req.normalizedBody || {},
+      systemComputed: {}, latencyMs, success: false,
+      error: err.message, outputPreview: '',
+    });
     console.error('[diet] Unhandled error:', err);
     return send(res, error('Failed to generate diet plan. Please try again later.'));
   }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function _deduplicateSources(sources) {
+  const seen = new Set();
+  return sources.filter((s) => {
+    if (!s?.id) return false;
+    if (seen.has(s.id)) return false;
+    seen.add(s.id);
+    return true;
+  });
 }

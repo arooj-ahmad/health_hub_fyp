@@ -1,48 +1,45 @@
 /**
- * Recipe Controller
+ * Recipe Controller — v2 (Data-Aware)
  * ─────────────────────────────────────────────────────────────────────────────
- * Orchestrates healthy recipe generation:
- *   Request → Validate → (RAG hooks) → Build prompt → AI Service → Parse → Respond
- *
- * Ported from: src/modules/recipe/services/recipeAIService.js
+ * Pipeline: Normalize → Validate → RAG hooks → AI → Schema Validate → Log → Respond
  */
 
 import { generateAIResponse } from '../services/ai/aiService.js';
 import { buildContext } from '../services/rag/contextBuilder.js';
 import { retrieve } from '../services/rag/retrievalLayer.js';
 import { injectMetadata } from '../services/rag/metadataInjector.js';
-import { sanitizeInput, cleanAIJSON } from '../utils/promptSanitizer.js';
+import { cleanAIJSON } from '../utils/promptSanitizer.js';
 import { success, error, send } from '../utils/responseFormatter.js';
+import { validateRecipeResponse } from '../utils/schemaValidator.js';
+import { logGeneration, createTimer } from '../services/logging/aiLogger.js';
 
 export async function generateRecipes(req, res) {
-  try {
-    const {
-      ingredients, userProfile,
-      riskAnalysis = { suggestedSubstitutions: [], problemIngredients: [] },
-      userOverrode = false,
-    } = req.body;
+  const timer = createTimer();
 
-    // ── Validate ──
-    if (!ingredients || !Array.isArray(ingredients) || ingredients.length === 0) {
+  try {
+    const n = req.normalizedBody;
+    const rawInput = req.body;
+
+    if (!n || !n.ingredients || n.ingredients.length === 0) {
       return send(res, error('Missing or empty ingredients array', 400));
     }
-    if (!userProfile) {
+    if (!n.userProfile) {
       return send(res, error('Missing userProfile', 400));
     }
 
     const userId = req.user?.uid || 'anonymous';
-    const { suggestedSubstitutions, problemIngredients } = riskAnalysis;
+    const { suggestedSubstitutions, problemIngredients } = n.riskAnalysis;
 
     // ── RAG hooks ──
     const context = await buildContext({ userId, type: 'recipe' });
-    const retrievedDocs = await retrieve({ query: ingredients.join(', '), type: 'recipe' });
+    const retrievedDocs = await retrieve({ query: n.ingredients.join(', '), type: 'recipe' });
 
-    // ── Build prompt (ported from recipeAIService.js) ──
+    // ── Build prompt ──
     const substitutionText = suggestedSubstitutions.length > 0
       ? `\nSuggested healthier substitutions (USE these in recipes where possible):\n${suggestedSubstitutions.map((s) => `- ${s.original} → ${s.replacement} (${s.reason})`).join('\n')}`
       : '';
 
-    const warningText = userOverrode
+    const warningText = n.userOverrode
       ? `\nIMPORTANT: The user has overridden health warnings. Still try to:
 - Reduce quantities of flagged ingredients
 - Use healthier cooking methods (grilling, baking, steaming, boiling, air frying)
@@ -62,137 +59,113 @@ Problem ingredients the user insisted on: ${problemIngredients.map((p) => p.ingr
 - Recipes must be safe for the user's health conditions.
 
 === USER HEALTH PROFILE ===
-Age: ${userProfile.age}
-Gender: ${userProfile.gender}
-Height: ${userProfile.height} cm
-Weight: ${userProfile.weight} kg
-BMI: ${userProfile.bmi}
-BMI Category: ${userProfile.bmiCategory}
-Health Conditions: ${sanitizeInput(userProfile.conditions || 'None')}
-Allergies: ${sanitizeInput(userProfile.allergies || 'None')}
-Goal: ${userProfile.goal}
-Daily Calorie Target: ${userProfile.calories} kcal
+Age: ${n.userProfile.age}
+Gender: ${n.userProfile.gender}
+Height: ${n.userProfile.height} cm
+Weight: ${n.userProfile.weight} kg
+BMI: ${n.userProfile.bmi}
+BMI Category: ${n.userProfile.bmiCategory}
+Health Conditions: ${n.userProfile.conditions || 'None'}
+Allergies: ${n.userProfile.allergies || 'None'}
+Goal: ${n.userProfile.goal}
+Daily Calorie Target: ${n.userProfile.calories} kcal
 
 === AVAILABLE INGREDIENTS ===
-${ingredients.map((i) => sanitizeInput(i)).join(', ')}
+${n.ingredients.join(', ')}
 ${substitutionText}
 ${warningText}
 
 === RECIPE REQUIREMENTS ===
-
 Generate EXACTLY 4 different healthy recipes.
-
-Each recipe must be:
-- Healthy and nutritionally balanced
-- Simple to cook (beginner-friendly)
-- Affordable and practical for Pakistani households
-- Using ingredients commonly available in Pakistan
-- Following halal dietary rules strictly
-- Written in simple, clear English that Pakistani users can understand
-- Roughly fitting the user's daily calorie target (each recipe = ~1/3 to 1/4 of daily calories)
-
-Prefer healthy cooking methods:
-- Grilling, baking, steaming, boiling, air frying
-- Avoid deep frying where possible
-
-=== NUTRITION BALANCING ===
-Consider:
-- Adequate protein intake
-- Appropriate carbohydrate level for the goal
-- Healthy fats
-- Fiber content
-- Avoid excessive sugar, salt, and saturated fat
-
-=== INGREDIENT SUBSTITUTION ===
-If any user ingredient is unhealthy for their condition, automatically substitute:
-- white rice → brown rice
-- butter → olive oil
-- fried chicken → grilled chicken
-- cream → yogurt
-- maida (white flour) → whole wheat flour (atta)
-- full cream milk → low fat milk
-- sugar → stevia or small amount of honey
+Each must be: healthy, simple, affordable, HALAL, Pakistani-practical.
+Prefer: grilling, baking, steaming, boiling, air frying. Avoid deep frying.
 
 === OUTPUT FORMAT ===
-
 Return ONLY a JSON object (no markdown fences, no extra text):
 {
   "recipes": [
     {
-      "name": "Simple clear recipe name",
-      "cookingTime": "30 minutes",
-      "difficulty": "Easy",
-      "servings": 2,
-      "caloriesPerServing": 380,
-      "ingredients": [
-        {"item": "chicken breast", "quantity": "150g"}
-      ],
-      "instructions": [
-        "Step 1...",
-        "Step 2..."
-      ],
-      "macronutrients": {
-        "protein": "28g",
-        "carbohydrates": "45g",
-        "fats": "10g",
-        "fiber": "3g"
-      },
+      "name": "...", "cookingTime": "...", "difficulty": "Easy",
+      "servings": 2, "caloriesPerServing": 380,
+      "ingredients": [{"item": "...", "quantity": "..."}],
+      "instructions": ["Step 1...", "Step 2..."],
+      "macronutrients": {"protein": "28g", "carbohydrates": "45g", "fats": "10g", "fiber": "3g"},
       "healthNote": "..."
     }
   ],
-  "healthierAlternatives": [
-    {"original": "white rice", "healthier": "brown rice", "benefit": "More fiber and slower digestion"}
-  ],
-  "disclaimer": "This suggestion is for informational purposes only and does not replace professional medical advice."
+  "healthierAlternatives": [{"original": "...", "healthier": "...", "benefit": "..."}],
+  "disclaimer": "..."
 }
 
-Generate exactly 4 recipes. Make each recipe different in style (e.g., one curry, one salad/side, one rice dish, one soup/stew).`;
+Generate exactly 4 recipes with different styles (curry, salad/side, rice dish, soup/stew).`;
 
     const prompt = injectMetadata({ prompt: rawPrompt, context, retrievedDocs });
 
     // ── Call AI ──
     const aiResponse = await generateAIResponse({
-      prompt,
-      type: 'recipe',
-      userId,
-      options: { maxTokens: 4000 },
+      prompt, type: 'recipe', userId, options: { maxTokens: 4000 },
     });
 
+    let responseData;
     if (!aiResponse?.success) {
-      return send(res, success({
-        recipes: [],
-        healthierAlternatives: [],
+      responseData = {
+        recipes: [], healthierAlternatives: [],
         disclaimer: 'AI service temporarily unavailable. Please try again later.',
-      }));
+      };
+    } else {
+      const cleaned = cleanAIJSON(aiResponse.content);
+      if (!cleaned) {
+        responseData = {
+          recipes: [], healthierAlternatives: [],
+          disclaimer: 'Failed to parse AI response. Please try again.',
+        };
+      } else {
+        try {
+          const parsed = JSON.parse(cleaned);
+          responseData = {
+            recipes: parsed.recipes || [],
+            healthierAlternatives: parsed.healthierAlternatives || [],
+            disclaimer: parsed.disclaimer || 'This suggestion is for informational purposes only.',
+          };
+        } catch (parseErr) {
+          console.warn('[recipe] JSON parse failed:', parseErr.message);
+          responseData = {
+            recipes: [], healthierAlternatives: [],
+            disclaimer: 'Failed to parse recipe data. Please try again.',
+          };
+        }
+      }
     }
 
-    // ── Parse response ──
-    const cleaned = cleanAIJSON(aiResponse.content);
-    if (!cleaned) {
-      return send(res, success({
-        recipes: [],
-        healthierAlternatives: [],
-        disclaimer: 'Failed to parse AI response. Please try again.',
-      }));
-    }
+    // ── Schema validation ──
+    const validation = validateRecipeResponse(responseData);
+    const latencyMs = timer.stop();
 
-    try {
-      const parsed = JSON.parse(cleaned);
+    // ── Async logging ──
+    logGeneration({
+      userId, type: 'recipe', rawInput, normalizedInput: n,
+      systemComputed: { bmi: n.userProfile.bmi, goal: n.userProfile.goal, calories: n.userProfile.calories },
+      latencyMs,
+      success: validation.data?.recipes?.length > 0,
+      error: validation.data?.recipes?.length === 0 ? 'No recipes generated' : null,
+      outputPreview: JSON.stringify((validation.data?.recipes || [])[0] || {}).substring(0, 500),
+      metadata: {
+        ingredientCount: n.ingredients.length,
+        recipesGenerated: validation.data?.recipes?.length || 0,
+        validationErrors: validation.errors,
+      },
+    });
 
-      return send(res, success({
-        recipes: parsed.recipes || [],
-        healthierAlternatives: parsed.healthierAlternatives || [],
-        disclaimer: parsed.disclaimer || 'This suggestion is for informational purposes only.',
-      }));
-    } catch (parseErr) {
-      console.warn('[recipe] JSON parse failed:', parseErr.message);
-      return send(res, success({
-        recipes: [],
-        healthierAlternatives: [],
-        disclaimer: 'Failed to parse recipe data. Please try again.',
-      }));
-    }
+    return send(res, success(validation.data));
+
   } catch (err) {
+    const latencyMs = timer.stop();
+    logGeneration({
+      userId: req.user?.uid || 'anonymous', type: 'recipe',
+      rawInput: req.body, normalizedInput: req.normalizedBody || {},
+      systemComputed: {}, latencyMs, success: false,
+      error: err.message, outputPreview: '',
+    });
     console.error('[recipe] Unhandled error:', err);
     return send(res, error('Failed to generate recipes. Please try again later.'));
   }

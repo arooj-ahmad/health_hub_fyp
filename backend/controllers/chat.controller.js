@@ -1,20 +1,16 @@
 /**
- * Chat Controller
+ * Chat Controller — v2 (Data-Aware)
  * ─────────────────────────────────────────────────────────────────────────────
- * Orchestrates AI chatbot (AI Doctor) conversations:
- *   Request → Validate → (RAG hooks) → Inject system prompt → AI Chat → Respond
- *
- * Ported from: src/pages/AIDoctor.jsx
+ * Pipeline: Normalize → Validate → RAG hooks → AI Chat → Schema Validate → Log → Respond
  */
 
 import { chatWithAI } from '../services/ai/aiService.js';
 import { buildContext } from '../services/rag/contextBuilder.js';
 import { retrieve } from '../services/rag/retrievalLayer.js';
 import { injectMetadata } from '../services/rag/metadataInjector.js';
-import { sanitizeMessages } from '../utils/promptSanitizer.js';
 import { success, error, send } from '../utils/responseFormatter.js';
-
-// ── System context for medical AI assistant ─────────────────────────────────
+import { validateChatResponse } from '../utils/schemaValidator.js';
+import { logGeneration, createTimer } from '../services/logging/aiLogger.js';
 
 const SYSTEM_CONTEXT = {
   role: 'user',
@@ -22,59 +18,71 @@ const SYSTEM_CONTEXT = {
 };
 
 export async function handleChat(req, res) {
-  try {
-    const { messages } = req.body;
+  const timer = createTimer();
 
-    // ── Validate ──
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+  try {
+    const n = req.normalizedBody;
+    const rawInput = req.body;
+
+    if (!n || !n.messages || n.messages.length === 0) {
       return send(res, error('Missing or empty messages array', 400));
     }
 
     const userId = req.user?.uid || 'anonymous';
-
-    // ── Sanitize messages ──
-    const sanitized = sanitizeMessages(messages);
-    if (sanitized.length === 0) {
-      return send(res, error('No valid messages provided', 400));
-    }
+    const lastMessage = n.messages[n.messages.length - 1];
 
     // ── RAG hooks ──
-    const lastMessage = sanitized[sanitized.length - 1];
     const context = await buildContext({ userId, type: 'chat' });
     const retrievedDocs = await retrieve({ query: lastMessage.content, type: 'chat' });
 
-    // ── Inject context into system prompt if available ──
     let systemPrompt = SYSTEM_CONTEXT;
     if (context || retrievedDocs.length > 0) {
       const enrichedContent = injectMetadata({
-        prompt: SYSTEM_CONTEXT.content,
-        context,
-        retrievedDocs,
+        prompt: SYSTEM_CONTEXT.content, context, retrievedDocs,
       });
       systemPrompt = { role: 'user', content: enrichedContent };
     }
 
-    // ── Call AI chat ──
+    // ── Call AI ──
     const aiResponse = await chatWithAI({
-      messages: [systemPrompt, ...sanitized],
-      type: 'chat',
-      userId,
+      messages: [systemPrompt, ...n.messages], type: 'chat', userId,
     });
 
-    if (!aiResponse?.success) {
-      return send(res, success({
-        content: "I apologize, but I'm having trouble processing your request right now. Please try again later or consult with a healthcare professional for immediate assistance.",
-      }));
-    }
+    const responseData = {
+      content: aiResponse?.success
+        ? aiResponse.content || ''
+        : "I apologize, but I'm having trouble processing your request right now. Please try again later or consult with a healthcare professional for immediate assistance.",
+    };
 
-    // ── Firestore save placeholder ──
-    // await firestoreService.saveChatMessage(userId, { role: 'user', content: lastMessage.content });
-    // await firestoreService.saveChatMessage(userId, { role: 'assistant', content: aiResponse.content });
+    // ── Schema validation ──
+    const validation = validateChatResponse(responseData);
+    const latencyMs = timer.stop();
 
-    return send(res, success({
-      content: aiResponse.content || "I apologize, but I'm having trouble processing your request right now.",
-    }));
+    // ── Async logging ──
+    logGeneration({
+      userId, type: 'chat', rawInput, normalizedInput: n,
+      systemComputed: {},
+      latencyMs,
+      success: aiResponse?.success || false,
+      error: aiResponse?.success ? null : (aiResponse?.error || 'AI chat failed'),
+      outputPreview: (validation.data?.content || '').substring(0, 500),
+      metadata: {
+        messageCount: n.messages.length,
+        lastMessageLength: lastMessage.content.length,
+        validationErrors: validation.errors,
+      },
+    });
+
+    return send(res, success(validation.data));
+
   } catch (err) {
+    const latencyMs = timer.stop();
+    logGeneration({
+      userId: req.user?.uid || 'anonymous', type: 'chat',
+      rawInput: req.body, normalizedInput: req.normalizedBody || {},
+      systemComputed: {}, latencyMs, success: false,
+      error: err.message, outputPreview: '',
+    });
     console.error('[chat] Unhandled error:', err);
     return send(res, error('Chat service unavailable. Please try again later.'));
   }
