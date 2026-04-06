@@ -139,7 +139,18 @@ Generate exactly 4 recipes. Make each recipe different in style (e.g., one curry
 
   try {
     const response = await generateAIResponse(prompt);
-    const cleaned = response.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    // Check if AI response was successful
+    if (!response?.success) {
+      console.warn('AI recipe generation skipped:', response?.error);
+      return {
+        recipes: [],
+        healthierAlternatives: [],
+        disclaimer: 'AI service temporarily unavailable. Please try again later.',
+      };
+    }
+    
+    const cleaned = response.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned);
 
     return {
@@ -148,7 +159,11 @@ Generate exactly 4 recipes. Make each recipe different in style (e.g., one curry
       disclaimer: parsed.disclaimer || 'This suggestion is for informational purposes only and does not replace professional medical advice.',
     };
   } catch (error) {
-    console.error('Recipe generation failed:', error);
-    throw new Error('Failed to generate recipes. Please try again.');
+    console.warn('Recipe generation failed:', error.message);
+    return {
+      recipes: [],
+      healthierAlternatives: [],
+      disclaimer: 'Failed to generate recipes. AI service temporarily unavailable. Please try again later.',
+    };
   }
 };

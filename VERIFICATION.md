@@ -12,9 +12,9 @@ All 7 critical issues have been successfully resolved!
 - **File**: `.env`
 - **Status**: Complete
 - **Changes**:
-  - ✓ Firebase API Key: `AIzaSyAsRnPc5FvbiCFOFwobFI54iAb-Gt1mozA`
+  - ✓ Firebase API Key: ``
   - ✓ Firebase Project ID: `healthhub-5de07`
-  - ✓ Groq API Key: `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`
+  - ✓ Groq API Key: ``
   - ✓ AI Model: `openai/gpt-oss-20b`
   - ✓ AI Provider: `groq`
 
@@ -201,11 +201,7 @@ service cloud.firestore {
 **Solution**:
 - Check browser console for API key validation messages
 - Verify Groq API key is valid: https://console.groq.com/
-- Test API key with curl:
-  ```bash
-  curl https://api.groq.com/openai/v1/models \
-    -H "Authorization: Bearer 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"
-  ```
+
 
 ### Issue: "db is null" errors
 **Solution**:

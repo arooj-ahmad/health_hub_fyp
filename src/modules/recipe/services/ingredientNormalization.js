@@ -65,14 +65,26 @@ Return ONLY a JSON object in this exact format (no markdown, no explanation):
 
   try {
     const response = await generateAIResponse(prompt);
-    const cleaned = response.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    // Check if AI response was successful
+    if (!response?.success) {
+      console.warn('AI ingredient normalization skipped:', response?.error);
+      // Fallback: simple split and trim
+      const fallback = rawInput
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      return { normalized: [...new Set(fallback)], original: rawInput };
+    }
+    
+    const cleaned = response.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return {
       normalized: parsed.normalized || [],
       original: rawInput,
     };
   } catch (error) {
-    console.error('Ingredient normalization failed:', error);
+    console.warn('Ingredient normalization failed:', error.message);
     // Fallback: simple split and trim
     const fallback = rawInput
       .split(',')

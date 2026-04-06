@@ -64,7 +64,14 @@ Return ONLY a JSON object (no markdown, no explanation):
 
   try {
     const response = await generateAIResponse(prompt);
-    const cleaned = response.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    // Check if AI response was successful
+    if (!response?.success) {
+      console.warn('AI health risk analysis skipped, using local fallback:', response?.error);
+      return localHealthCheck(normalizedIngredients, userProfile, restrictedIngredients);
+    }
+    
+    const cleaned = response.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return {
       safeIngredients: parsed.safeIngredients || normalizedIngredients,
@@ -74,7 +81,7 @@ Return ONLY a JSON object (no markdown, no explanation):
       suggestedSubstitutions: parsed.suggestedSubstitutions || [],
     };
   } catch (error) {
-    console.error('Health risk analysis failed:', error);
+    console.warn('Health risk analysis failed, using local fallback:', error.message);
     return localHealthCheck(normalizedIngredients, userProfile, restrictedIngredients);
   }
 };

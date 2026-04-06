@@ -2,8 +2,8 @@
  * DietHistoryPage — Shows the user's previously generated diet plans.
  *
  * Fetches from `dietPlans` collection (primary, where data lives)
- * with fallback to `dietplans_history`. Displays cards; clicking
- * "View" opens a detail modal with the full plan.
+ * with fallback to `dietplans_history`. Displays cards and routes
+ * to a dedicated details page on "View".
  */
 
 import { useState, useEffect } from 'react';
@@ -89,7 +89,11 @@ const DietHistoryPage = () => {
         {!loading && entries.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {entries.map((entry) => (
-              <DietPlanHistoryCard key={entry.id} entry={entry} onView={setSelected} />
+              <DietPlanHistoryCard
+                key={entry.id}
+                entry={entry}
+                onView={(plan) => navigate(`/diet-plan/${plan.id}`)}
+              />
             ))}
           </div>
         )}

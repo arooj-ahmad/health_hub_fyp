@@ -254,30 +254,53 @@ async function openaiChat(messages) {
 
 async function groqGenerateResponse(prompt, context = '') {
   const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-  if (!apiKey) throw new Error('Groq API key not configured');
+  if (!apiKey) {
+    return {
+      success: false,
+      error: 'Groq API key not configured',
+    };
+  }
   
   const model = import.meta.env.VITE_AI_MODEL || 'mixtral-8x7b-32768';
   const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
 
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: fullPrompt }],
-    }),
-  });
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: fullPrompt }],
+        max_tokens: 2500,
+        temperature: 0.4,
+      }),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Groq API error: ${response.statusText} - ${errorText}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData?.error?.message || `HTTP ${response.status}`;
+      console.warn('Groq API warning (groqGenerateResponse):', errorMessage);
+      return {
+        success: false,
+        error: errorMessage,
+      };
+    }
+
+    const data = await response.json();
+    return {
+      success: true,
+      content: data.choices?.[0]?.message?.content || '',
+    };
+  } catch (err) {
+    console.warn('Groq network error (groqGenerateResponse):', err.message);
+    return {
+      success: false,
+      error: 'Network error - AI service unavailable',
+    };
   }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
 }
 
 async function groqGenerateResponseWithImage(prompt, imageFile) {
@@ -288,32 +311,55 @@ async function groqGenerateResponseWithImage(prompt, imageFile) {
 
 async function groqChat(messages) {
   const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-  if (!apiKey) throw new Error('Groq API key not configured');
+  if (!apiKey) {
+    return {
+      success: false,
+      error: 'Groq API key not configured',
+    };
+  }
   
   const model = import.meta.env.VITE_AI_MODEL || 'mixtral-8x7b-32768';
 
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: messages.map(msg => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content,
-      })),
-    }),
-  });
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: messages.map(msg => ({
+          role: msg.role === 'assistant' ? 'assistant' : 'user',
+          content: msg.content,
+        })),
+        max_tokens: 2500,
+        temperature: 0.4,
+      }),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Groq API error: ${response.statusText} - ${errorText}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData?.error?.message || `HTTP ${response.status}`;
+      console.warn('Groq API warning (groqChat):', errorMessage);
+      return {
+        success: false,
+        error: errorMessage,
+      };
+    }
+
+    const data = await response.json();
+    return {
+      success: true,
+      content: data.choices?.[0]?.message?.content || '',
+    };
+  } catch (err) {
+    console.warn('Groq network error (groqChat):', err.message);
+    return {
+      success: false,
+      error: 'Network error - AI service unavailable',
+    };
   }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
 }
 
 // =============================================================================
@@ -444,15 +490,30 @@ function getProvider() {
  * Generate an AI response for a given prompt
  * @param {string} prompt - The prompt to send to the AI
  * @param {string} context - Optional context to prepend to the prompt
- * @returns {Promise<string>} The AI's response
+ * @returns {Promise<{success: boolean, content: string, error?: string}>} The AI's response
  */
 export const generateAIResponse = async (prompt, context = '') => {
   try {
     const provider = getProvider();
-    return await provider.generateResponse(prompt, context);
+    const result = await provider.generateResponse(prompt, context);
+    
+    // Check if result has success property (safe API format)
+    if (result && typeof result === 'object' && 'success' in result) {
+      return result;
+    }
+    
+    // Legacy format - wrap in success object
+    return {
+      success: true,
+      content: result || '',
+    };
   } catch (error) {
-    console.error(`AI Provider (${AI_PROVIDER}) Error:`, error);
-    throw new Error(`Failed to generate AI response: ${error.message}`);
+    console.warn('AI Provider warning:', error.message);
+    return {
+      success: false,
+      content: '',
+      error: error.message || 'AI service failed',
+    };
   }
 };
 
@@ -460,30 +521,60 @@ export const generateAIResponse = async (prompt, context = '') => {
  * Generate an AI response for a prompt with an image
  * @param {string} prompt - The prompt to send to the AI
  * @param {File} imageFile - The image file to analyze
- * @returns {Promise<string>} The AI's response
+ * @returns {Promise<{success: boolean, content: string, error?: string}>} The AI's response
  */
 export const generateAIResponseWithImage = async (prompt, imageFile) => {
   try {
     const provider = getProvider();
-    return await provider.generateResponseWithImage(prompt, imageFile);
+    const result = await provider.generateResponseWithImage(prompt, imageFile);
+    
+    // Check if result has success property (safe API format)
+    if (result && typeof result === 'object' && 'success' in result) {
+      return result;
+    }
+    
+    // Legacy format - wrap in success object
+    return {
+      success: true,
+      content: result || '',
+    };
   } catch (error) {
-    console.error(`AI Provider (${AI_PROVIDER}) Error:`, error);
-    throw new Error(`Failed to generate AI response with image: ${error.message}`);
+    console.warn('AI Provider warning:', error.message);
+    return {
+      success: false,
+      content: '',
+      error: error.message || 'AI service failed with image',
+    };
   }
 };
 
 /**
  * Have a conversation with the AI
  * @param {Array<{role: string, content: string}>} messages - Array of messages in the conversation
- * @returns {Promise<string>} The AI's response
+ * @returns {Promise<{success: boolean, content: string, error?: string}>} The AI's response
  */
 export const chatWithAI = async (messages) => {
   try {
     const provider = getProvider();
-    return await provider.chat(messages);
+    const result = await provider.chat(messages);
+    
+    // Check if result has success property (safe API format)
+    if (result && typeof result === 'object' && 'success' in result) {
+      return result;
+    }
+    
+    // Legacy format - wrap in success object
+    return {
+      success: true,
+      content: result || '',
+    };
   } catch (error) {
-    console.error(`AI Provider (${AI_PROVIDER}) Chat Error:`, error);
-    throw new Error(`Failed to chat with AI: ${error.message}`);
+    console.warn('AI Provider warning:', error.message);
+    return {
+      success: false,
+      content: '',
+      error: error.message || 'AI chat failed',
+    };
   }
 };
 

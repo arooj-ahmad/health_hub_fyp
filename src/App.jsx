@@ -26,6 +26,7 @@ import ConsultNutritionist from "./pages/ConsultNutritionist";
 import NutritionistDetail from "./pages/NutritionistDetail";
 import ConsultationChatPage from "./pages/ConsultationChatPage";
 import MyAppointmentsPage from "./pages/MyAppointmentsPage";
+import DietPlanDetails from "./pages/DietPlanDetails";
 import { AuthProvider } from "./context/AuthContext";
 import { UserRoute, NutritionistRoute, ProtectedRoute } from "./components/ProtectedRoute";
 
@@ -53,6 +54,7 @@ const App = () => {
               <Route path="/diet-plans/:id" element={<UserRoute><DietPlanDetailPage /></UserRoute>} />
               <Route path="/recipes/history" element={<UserRoute><RecipeHistoryPage /></UserRoute>} />
               <Route path="/diet/history" element={<UserRoute><DietHistoryPage /></UserRoute>} />
+              <Route path="/diet-plan/:planId" element={<UserRoute><DietPlanDetails /></UserRoute>} />
               <Route path="/progress" element={<UserRoute><Progress /></UserRoute>} />
               <Route path="/progress/log" element={<UserRoute><ProgressLog /></UserRoute>} />
               <Route path="/lab-reports" element={<UserRoute><LabReports /></UserRoute>} />

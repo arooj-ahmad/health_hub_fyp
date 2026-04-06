@@ -161,17 +161,27 @@ const AIDoctor = () => {
 
       const response = await chatWithAI([systemContext, ...aiMessages]);
 
+      // Handle new safe response format from chatWithAI
+      let aiContent = '';
+      if (response?.success) {
+        aiContent = response.content || '';
+      } else {
+        console.warn('AI chat error:', response?.error);
+        // Use fallback for failed responses
+        aiContent = '';
+      }
+
       const aiResponse = {
         id: Date.now().toString(),
         role: "assistant",
-        content: response,
+        content: aiContent || "I apologize, but I'm having trouble processing your request right now. Please try again later or consult with a healthcare professional for immediate assistance.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
 
       setMessages(prev => [...prev, aiResponse]);
       await saveMessageToFirestore(aiResponse);
     } catch (error) {
-      console.error('AI Chat Error:', error);
+      console.warn('AI Chat Error:', error.message);
       const fallbackResponse = {
         id: Date.now().toString(),
         role: "assistant",

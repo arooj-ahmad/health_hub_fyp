@@ -69,11 +69,27 @@ function normaliseDietPlanDoc(doc) {
  * @returns {Promise<string|null>} — document ID or null
  */
 export async function saveDietPlanHistory(userId, data) {
-  if (!userId) throw new Error('userId is required');
-  if (!data?.dailyPlans?.length) return null;
+  if (!userId) {
+    console.error('[dietPlanStorage] userId is required for saving to dietplans_history');
+    return null;
+  }
+  if (!data) {
+    console.warn('[dietPlanStorage] data is required for saving to dietplans_history');
+    return null;
+  }
+  if (!data?.dailyPlans || !Array.isArray(data.dailyPlans)) {
+    console.warn('[dietPlanStorage] dailyPlans is required and must be an array');
+    return null;
+  }
+  if (data.dailyPlans.length === 0) {
+    console.warn('[dietPlanStorage] dailyPlans array is empty, skipping save');
+    return null;
+  }
 
   try {
-    const docRef = await addDoc(collection(db, SECONDARY), {
+    console.log('[dietPlanStorage] Saving to', SECONDARY, '- userId:', userId, 'plans:', data.dailyPlans.length, 'days:', data.durationDays);
+
+    const payload = {
       userId,
       goalType: data.goalType || '',
       durationDays: data.durationDays || 0,
@@ -82,12 +98,14 @@ export async function saveDietPlanHistory(userId, data) {
       manualGoalUsed: data.manualGoalUsed ?? false,
       healthWarnings: Array.isArray(data.healthWarnings) ? data.healthWarnings : [],
       createdAt: serverTimestamp(),
-    });
+    };
 
-    console.log('[dietPlanStorage] Saved to', SECONDARY, ':', docRef.id);
+    const docRef = await addDoc(collection(db, SECONDARY), payload);
+    console.log('[dietPlanStorage] Successfully saved to', SECONDARY, ':', docRef.id);
     return docRef.id;
   } catch (err) {
-    console.warn('[dietPlanStorage] Secondary save failed:', err.message);
+    console.error('[dietPlanStorage] Secondary save failed:', err.message);
+    console.error('[dietPlanStorage] Attempted to save payload:', { userId, goalType: data.goalType, durationDays: data.durationDays, dailyPlansCount: data.dailyPlans?.length });
     return null; // Non-fatal — primary save to dietPlans already succeeded
   }
 }

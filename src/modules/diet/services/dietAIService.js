@@ -24,22 +24,23 @@
 
 import { generateAIResponse } from '@/services/aiService';
 import { createDietPlan, getUserDietPlans } from '@/services/firestoreService';
-import { MEAL_SLOTS, CALORIE_SPLIT, distributeMealCalories } from '../utils/mealHelpers';
+import { MEAL_SLOTS, distributeMealCalories } from '../utils/mealHelpers';
 import { calcDailyMacros } from '../utils/portionCalculator';
 import { Timestamp } from 'firebase/firestore';
 
 // ── Prompt Builder ───────────────────────────────────────────────────────────
 
-function buildDietPrompt({
+function buildDietDayPrompt({
   age, gender, height, weight,
   bmi, bmiCategory, goal, targetWeight,
   dailyCalories, activityLevel,
   conditions, allergies,
   exclusionList, conditionAdaptations,
   durationDays, dailyMacros, mealCalories,
+  dayNumber,
 }) {
   const condRulesText = conditionAdaptations.length > 0
-    ? conditionAdaptations.map(a => `• ${a.label}: ${a.rules.join('; ')}`).join('\n')
+    ? conditionAdaptations.map((adaptation) => `• ${adaptation.label}: ${adaptation.rules.join('; ')}`).join('\n')
     : 'None';
 
   const exclusionText = exclusionList.length > 0
@@ -47,10 +48,12 @@ function buildDietPrompt({
     : 'None';
 
   const mealSlotText = MEAL_SLOTS
-    .map(s => `${s.key} (${s.label}): ~${mealCalories[s.key]} kcal`)
+    .map((slot) => `${slot.key} (${slot.label}): ~${mealCalories[slot.key]} kcal`)
     .join('\n');
 
   return `You are an advanced AI Diet Planning Assistant for SmartNutrition Pakistan.
+
+Generate a diet plan for Day ${dayNumber} of ${durationDays}.
 
 SYSTEM-CALCULATED VALUES (do NOT recalculate or change):
   BMI: ${bmi}
@@ -85,95 +88,170 @@ IMPORTANT RULES:
 6. Control oil, sugar, salt per health needs.
 7. Keep each meal's calories close to the assigned target above.
 8. Use simple English with Pakistani food names in parentheses.
-9. Duration: ${durationDays} day(s). Generate a unique plan for EACH day.
+9. Make Day ${dayNumber} distinct from other days while staying within the same calorie target.
 
-RESPOND WITH VALID JSON ONLY — no markdown, no extra text. Use this exact schema:
+Return ONLY valid JSON in this exact format:
 
 {
-  "dailyPlans": [
+  "day": ${dayNumber},
+  "meals": [
     {
-      "day": 1,
-      "meals": [
-        {
-          "slot": "breakfast",
-          "name": "Meal Name",
-          "items": [
-            { "food": "Food name", "quantity": "1 cup / 2 roti / 100g", "calories": 200, "protein": 10, "carbs": 25, "fat": 5 }
-          ],
-          "calories": 450,
-          "protein": 20,
-          "carbs": 50,
-          "fat": 15
-        }
+      "slot": "breakfast",
+      "name": "Meal Name",
+      "items": [
+        { "food": "Food name", "quantity": "1 cup / 2 roti / 100g", "calories": 200, "protein": 10, "carbs": 25, "fat": 5 }
       ],
-      "totalCalories": 1800,
-      "totalProtein": 90,
-      "totalCarbs": 200,
-      "totalFat": 60
+      "calories": 450,
+      "protein": 20,
+      "carbs": 50,
+      "fat": 15
     }
   ],
-  "explanation": "Short explanation of how this plan helps the user move from current weight to target weight, why it suits the BMI category, and any precautions.",
-  "tips": ["Tip 1", "Tip 2", "Tip 3"],
-  "disclaimer": "This diet plan is for informational purposes only and does not replace professional medical advice."
+  "totalCalories": 1800,
+  "totalProtein": 90,
+  "totalCarbs": 200,
+  "totalFat": 60
 }
 
-Generate for ALL ${durationDays} day(s). Each day should have all 4 meal slots: breakfast, lunch, snack, dinner.`;
+The response MUST start with { and end with }.
+Do NOT include markdown code blocks.
+Do NOT include explanation text before or after the JSON.
+Include all 4 meal slots: breakfast, lunch, snack, dinner.
+If any meal detail is uncertain, still return valid JSON with placeholder-safe values.`;
 }
 
 // ── Parse + Sanitise AI Response ─────────────────────────────────────────────
 
-function parseAIResponse(raw) {
-  // Strip markdown code fences if present
-  let cleaned = raw.trim();
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '');
+/**
+ * Clean AI response to extract valid JSON
+ * Handles:
+ * - Markdown code blocks (```json ... ```)
+ * - Extra whitespace and newlines
+ * - Text before/after JSON
+ * - Escaped quotes and special characters
+ */
+function cleanAIJSON(text = '') {
+  if (!text) return '';
+
+  // Convert to string
+  let cleaned = String(text).trim();
+
+  // Remove markdown code blocks
+  cleaned = cleaned.replace(/```json\s*/gi, '');
+  cleaned = cleaned.replace(/```\s*/gi, '');
+
+  // Find the first { and last } to extract JSON
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+
+  if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
+    return '';
+  }
+
+  // Extract only the JSON portion
+  cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+
+  // Handle common issues with newlines breaking strings
+  // Be careful not to break valid escaped newlines in JSON strings
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  return cleaned;
+}
+
+function normaliseMeal(meal = {}, fallbackSlot = 'meal') {
+  const items = Array.isArray(meal.items)
+    ? meal.items.map((item) => ({
+      food: item?.food || 'TBD',
+      quantity: item?.quantity || 'As advised',
+      calories: Number(item?.calories) || 0,
+      protein: Number(item?.protein) || 0,
+      carbs: Number(item?.carbs) || 0,
+      fat: Number(item?.fat) || 0,
+    }))
+    : [];
+
+  const mealCalories = Number(meal?.calories) || items.reduce((sum, item) => sum + (item.calories || 0), 0);
+  const mealProtein = Number(meal?.protein) || items.reduce((sum, item) => sum + (item.protein || 0), 0);
+  const mealCarbs = Number(meal?.carbs) || items.reduce((sum, item) => sum + (item.carbs || 0), 0);
+  const mealFat = Number(meal?.fat) || items.reduce((sum, item) => sum + (item.fat || 0), 0);
+
+  return {
+    slot: meal?.slot || fallbackSlot,
+    name: meal?.name || 'Balanced meal',
+    items,
+    calories: mealCalories,
+    protein: mealProtein,
+    carbs: mealCarbs,
+    fat: mealFat,
+  };
+}
+
+function normaliseDailyPlan(dayPlan = {}, expectedDay) {
+  const normalisedMeals = MEAL_SLOTS.map((slot) => {
+    const matchedMeal = Array.isArray(dayPlan?.meals)
+      ? dayPlan.meals.find((meal) => meal?.slot === slot.key)
+      : null;
+    return normaliseMeal(matchedMeal, slot.key);
+  });
+
+  return {
+    day: Number(dayPlan?.day) || expectedDay,
+    meals: normalisedMeals,
+    totalCalories: Number(dayPlan?.totalCalories) || normalisedMeals.reduce((sum, meal) => sum + (meal.calories || 0), 0),
+    totalProtein: Number(dayPlan?.totalProtein) || normalisedMeals.reduce((sum, meal) => sum + (meal.protein || 0), 0),
+    totalCarbs: Number(dayPlan?.totalCarbs) || normalisedMeals.reduce((sum, meal) => sum + (meal.carbs || 0), 0),
+    totalFat: Number(dayPlan?.totalFat) || normalisedMeals.reduce((sum, meal) => sum + (meal.fat || 0), 0),
+  };
+}
+
+function parseDailyPlanResponse(raw, expectedDay) {
+  const cleaned = cleanAIJSON(raw);
+
+  if (!cleaned) {
+    console.warn('[dietAIService] AI day response could not be cleaned for day', expectedDay);
+    return null;
   }
 
   try {
     const parsed = JSON.parse(cleaned);
 
-    // Ensure dailyPlans exists
-    if (!parsed.dailyPlans || !Array.isArray(parsed.dailyPlans)) {
-      throw new Error('Missing dailyPlans array');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.warn('[dietAIService] AI day response was not an object for day', expectedDay);
+      return null;
     }
 
-    // Ensure each day has 4 meal slots
-    for (const dp of parsed.dailyPlans) {
-      if (!dp.meals || !Array.isArray(dp.meals)) {
-        dp.meals = [];
-      }
-      // Calculate totals if missing
-      if (!dp.totalCalories) {
-        dp.totalCalories = dp.meals.reduce((s, m) => s + (m.calories || 0), 0);
-      }
-      if (!dp.totalProtein) {
-        dp.totalProtein = dp.meals.reduce((s, m) => s + (m.protein || 0), 0);
-      }
-      if (!dp.totalCarbs) {
-        dp.totalCarbs = dp.meals.reduce((s, m) => s + (m.carbs || 0), 0);
-      }
-      if (!dp.totalFat) {
-        dp.totalFat = dp.meals.reduce((s, m) => s + (m.fat || 0), 0);
-      }
-    }
-
-    return {
-      dailyPlans: parsed.dailyPlans,
-      explanation: parsed.explanation || '',
-      tips: parsed.tips || [],
-      disclaimer: parsed.disclaimer || 'This diet plan is for informational purposes only and does not replace professional medical advice.',
-    };
-  } catch (err) {
-    console.error('Failed to parse AI diet response as JSON:', err);
-    // Fallback: store raw text
-    return {
-      dailyPlans: [],
-      explanation: '',
-      tips: [],
-      disclaimer: 'This diet plan is for informational purposes only and does not replace professional medical advice.',
-      rawText: raw,
-    };
+    return normaliseDailyPlan(parsed, expectedDay);
+  } catch (error) {
+    console.warn('[dietAIService] AI day parsing failed for day', expectedDay, error);
+    return null;
   }
+}
+
+function buildPlanExplanation({ goal, bmiCategory, durationDays, calories, conditions }) {
+  const base = `This ${durationDays}-day plan is aligned with your ${goal.toLowerCase()} goal, ${bmiCategory} BMI category, and daily target of ${calories} kcal.`;
+  const conditionNote = conditions && conditions !== 'None'
+    ? ` It also accounts for your reported health conditions: ${conditions}.`
+    : '';
+
+  return `${base}${conditionNote} Each day keeps the meal structure consistent so the plan is easier to follow and safer to sustain.`;
+}
+
+function buildPlanTips({ goal, allergies, conditions }) {
+  const tips = [
+    `Follow portion sizes closely to stay on track with your ${goal.toLowerCase()} target.`,
+    'Drink water regularly throughout the day and avoid sugary drinks.',
+    'Prepare meals in advance where possible so the full plan stays practical during the week.',
+  ];
+
+  if (allergies && allergies !== 'None') {
+    tips.push(`Double-check ingredients to avoid these allergens: ${allergies}.`);
+  }
+
+  if (conditions && conditions !== 'None') {
+    tips.push(`Monitor how meals affect your health conditions and adjust with your clinician if needed: ${conditions}.`);
+  }
+
+  return tips.slice(0, 4);
 }
 
 // ── Main Generation Function ─────────────────────────────────────────────────
@@ -207,7 +285,7 @@ export async function generateDietPlan({
   const dailyMacros = calcDailyMacros(calories, goal);
   const mealCalories = distributeMealCalories(calories);
 
-  const prompt = buildDietPrompt({
+  const promptContext = {
     age: profile.age || computed.a,
     gender: profile.gender || computed.g,
     height: profile.height || computed.h,
@@ -225,10 +303,72 @@ export async function generateDietPlan({
     durationDays,
     dailyMacros,
     mealCalories,
-  });
+  };
 
-  const rawResponse = await generateAIResponse(prompt);
-  return parseAIResponse(rawResponse);
+  try {
+    const dailyPlans = [];
+
+    for (let day = 1; day <= durationDays; day += 1) {
+      const prompt = buildDietDayPrompt({
+        ...promptContext,
+        dayNumber: day,
+      });
+
+      const aiResponse = await generateAIResponse(prompt);
+
+      if (!aiResponse?.success) {
+        console.warn('[dietAIService] AI diet plan generation skipped for day', day, aiResponse?.error);
+        continue;
+      }
+
+      const parsedDay = parseDailyPlanResponse(aiResponse.content, day);
+
+      if (!parsedDay) {
+        continue;
+      }
+
+      dailyPlans.push(parsedDay);
+    }
+
+    if (dailyPlans.length === 0) {
+      return {
+        success: false,
+        dailyPlans: [],
+        explanation: 'AI service temporarily unavailable. Please try again later.',
+        tips: ['Please refresh and try again.'],
+        disclaimer: 'This diet plan is for informational purposes only and does not replace professional medical advice.',
+      };
+    }
+
+    dailyPlans.sort((left, right) => left.day - right.day);
+
+    return {
+      success: true,
+      dailyPlans,
+      explanation: buildPlanExplanation({
+        goal,
+        bmiCategory: computed.cat,
+        durationDays,
+        calories,
+        conditions,
+      }),
+      tips: buildPlanTips({
+        goal,
+        allergies,
+        conditions,
+      }),
+      disclaimer: 'This diet plan is for informational purposes only and does not replace professional medical advice.',
+    };
+  } catch (error) {
+    console.warn('AI diet plan generation error:', error.message);
+    return {
+      success: false,
+      dailyPlans: [],
+      explanation: 'Failed to generate diet plan. Please try again later.',
+      tips: ['Please refresh and try again.'],
+      disclaimer: 'This diet plan is for informational purposes only and does not replace professional medical advice.',
+    };
+  }
 }
 
 // ── Firestore Save ───────────────────────────────────────────────────────────
@@ -236,6 +376,7 @@ export async function generateDietPlan({
 /**
  * Persist a generated diet plan to Firestore.
  */
+
 export async function saveDietPlan(userId, {
   planResult,
   computed,
@@ -245,6 +386,15 @@ export async function saveDietPlan(userId, {
   allergies,
   profile,
 }) {
+  if (!userId) {
+    console.error('[dietAIService] userId is required for saving');
+    throw new Error('userId is required');
+  }
+  if (!planResult?.dailyPlans) {
+    console.error('[dietAIService] planResult.dailyPlans is required for saving');
+    throw new Error('Daily plans are required');
+  }
+
   const goal = selectedGoal || computed.goal;
 
   const dietPlanData = {
@@ -267,8 +417,13 @@ export async function saveDietPlan(userId, {
     explanation: planResult.explanation,
     tips: planResult.tips,
     disclaimer: planResult.disclaimer,
-    // Legacy field for backward compat with DietPlanDetail
-    aiGeneratedPlan: planResult.rawText || JSON.stringify(planResult.dailyPlans, null, 2),
+    // Keep this as structured JSON so clients can reliably read aiGeneratedPlan.dailyPlans
+    aiGeneratedPlan: {
+      dailyPlans: planResult.dailyPlans || [],
+      explanation: planResult.explanation || '',
+      tips: planResult.tips || [],
+      disclaimer: planResult.disclaimer || 'This diet plan is for informational purposes only and does not replace professional medical advice.',
+    },
     description: planResult.explanation
       ? planResult.explanation.substring(0, 200) + '...'
       : `${goal} plan for ${durationDays} days`,
@@ -277,7 +432,16 @@ export async function saveDietPlan(userId, {
     goalType: selectedGoal ? 'manual' : 'auto',
   };
 
-  return await createDietPlan(userId, dietPlanData);
+  console.log('[dietAIService] Saving diet plan - userId:', userId, 'goal:', goal, 'days:', durationDays, 'dailyPlans:', planResult.dailyPlans.length);
+
+  try {
+    const docRef = await createDietPlan(userId, dietPlanData);
+    console.log('[dietAIService] Successfully saved diet plan to dietPlans - docId:', docRef.id);
+    return docRef;
+  } catch (err) {
+    console.error('[dietAIService] Failed to save diet plan:', err.message);
+    throw err;
+  }
 }
 
 /**

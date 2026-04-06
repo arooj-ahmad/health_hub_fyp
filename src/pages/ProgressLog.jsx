@@ -287,22 +287,32 @@ End with this disclaimer:
 
 "This progress analysis is for informational purposes only and does not replace professional medical advice."`;
 
-      const aiResponse = await generateAIResponse(prompt);
-      setAiAnalysis(aiResponse);
+      const result = await generateAIResponse(prompt);
+      
+      // Handle new safe response format
+      let aiAnalysisContent = '';
+      if (result?.success) {
+        aiAnalysisContent = result.content || 'Progress analysis could not be completed. Please try again.';
+      } else {
+        console.warn('AI progress analysis failed:', result?.error);
+        aiAnalysisContent = 'Progress analysis service is temporarily unavailable. Please try again later.';
+      }
+      
+      setAiAnalysis(aiAnalysisContent);
 
       // Also store the AI analysis on the latest progress log
       if (!isEditMode && sorted.length > 0) {
         const latestLogId = sorted[sorted.length - 1]?.id;
         if (latestLogId) {
           try {
-            await updateProgressLog(latestLogId, { aiAnalysis: aiResponse });
+            await updateProgressLog(latestLogId, { aiAnalysis: aiAnalysisContent });
           } catch (_) {
             // non-critical – UI already shows the analysis
           }
         }
       }
     } catch (error) {
-      console.error("Error saving progress:", error);
+      console.warn("Error saving progress:", error.message);
       toast({ title: "Error", description: "Failed to save progress. Please try again.", variant: "destructive" });
     } finally {
       setIsSubmitting(false);

@@ -11,11 +11,9 @@
 **Issue**: Missing/incomplete API keys  
 **Fix Applied**: Updated `.env` with all required credentials
 - ✓ Firebase configuration (API key, project ID, etc.)
-- ✓ Groq API key: `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`
 - ✓ AI Model: `openai/gpt-oss-20b`
 - ✓ AI Provider: `groq`
 
----
 
 ### ✅ 2. Firebase Initialization (firebase.js)
 **Issue**: Weak initialization with fallback to null  
@@ -271,8 +269,7 @@ console.log(import.meta.env.VITE_FIREBASE_API_KEY)
 ```bash
 # Check API key validity
 curl https://api.groq.com/openai/v1/models \
-  -H "Authorization: Bearer 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"
-```
+  -H "Authorization: Bearer 
 
 ---
 

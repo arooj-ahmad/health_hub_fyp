@@ -84,22 +84,37 @@ export async function analyzeLabReport({ labMode, labValues, pdfText, file, heal
 
   let aiResponse = '';
 
-  if (labMode === 'PDF' && file) {
-    if (file.type.startsWith('image/')) {
-      // Use vision model for images
-      aiResponse = await generateAIResponseWithImage(prompt, file);
+  try {
+    let result = null;
+
+    if (labMode === 'PDF' && file) {
+      if (file.type.startsWith('image/')) {
+        // Use vision model for images
+        result = await generateAIResponseWithImage(prompt, file);
+      } else {
+        // Non-image PDF — text was already extracted; fallback to text prompt
+        result = await generateAIResponse(
+          pdfText
+            ? prompt
+            : prompt +
+                '\n\nNote: The user uploaded a PDF file but text extraction was not available. ' +
+                'Please advise them to upload a clear photo/scan of their lab report for better results.'
+        );
+      }
     } else {
-      // Non-image PDF — text was already extracted; fallback to text prompt
-      aiResponse = await generateAIResponse(
-        pdfText
-          ? prompt
-          : prompt +
-              '\n\nNote: The user uploaded a PDF file but text extraction was not available. ' +
-              'Please advise them to upload a clear photo/scan of their lab report for better results.'
-      );
+      result = await generateAIResponse(prompt);
     }
-  } else {
-    aiResponse = await generateAIResponse(prompt);
+
+    // Handle new safe response format
+    if (result?.success) {
+      aiResponse = result.content || 'Lab analysis could not be completed. Please try again.';
+    } else {
+      console.warn('AI lab analysis failed:', result?.error);
+      aiResponse = 'Lab analysis service is temporarily unavailable. Please try again later or contact support.';
+    }
+  } catch (error) {
+    console.warn('Lab analysis error:', error.message);
+    aiResponse = 'Lab analysis service is temporarily unavailable. Please try again later or contact support.';
   }
 
   // Derive risk level from response text

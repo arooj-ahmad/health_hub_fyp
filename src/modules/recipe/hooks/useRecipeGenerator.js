@@ -150,6 +150,13 @@ export function useRecipeGenerator() {
           // No issues → generate recipes
           const result = await generateHealthyRecipes(mapped, userProfile, risk, false);
 
+          // Check if recipes were generated
+          if (!result.recipes || result.recipes.length === 0) {
+            setErrorMessage(result.disclaimer || 'AI service temporarily unavailable. Please try again.');
+            setPipelineState(PIPELINE_STATES.ERROR);
+            return;
+          }
+
           // Attach AI-generated food images to each recipe
           const recipesWithImages = await attachRecipeImages(result.recipes || []);
 
@@ -163,8 +170,8 @@ export function useRecipeGenerator() {
           toast.success(`${recipesWithImages.length} healthy recipes generated!`);
         }
       } catch (err) {
-        console.error('Pipeline error:', err);
-        setErrorMessage(err.message || 'Something went wrong. Please try again.');
+        console.warn('Pipeline error:', err.message);
+        setErrorMessage('Something went wrong. Please try again.');
         setPipelineState(PIPELINE_STATES.ERROR);
       }
     },
@@ -179,6 +186,13 @@ export function useRecipeGenerator() {
     try {
       const result = await generateHealthyRecipes(pakistaniMapped, userProfile, riskAnalysis, true);
 
+      // Check if recipes were generated
+      if (!result.recipes || result.recipes.length === 0) {
+        setErrorMessage(result.disclaimer || 'AI service temporarily unavailable. Please try again.');
+        setPipelineState(PIPELINE_STATES.ERROR);
+        return;
+      }
+
       // Attach AI-generated food images to each recipe
       const recipesWithImages = await attachRecipeImages(result.recipes || []);
 
@@ -191,8 +205,8 @@ export function useRecipeGenerator() {
       setPipelineState(PIPELINE_STATES.RECIPES_READY);
       toast.success(`${recipesWithImages.length} recipes generated (with health override)`);
     } catch (err) {
-      console.error('Override generation error:', err);
-      setErrorMessage(err.message || 'Failed to generate recipes. Please try again.');
+      console.warn('Override generation error:', err.message);
+      setErrorMessage('Failed to generate recipes. AI service temporarily unavailable.');
       setPipelineState(PIPELINE_STATES.ERROR);
     }
   }, [pakistaniMapped, userProfile, riskAnalysis, rawInput, normalizedIngredientsList, saveToFirestore]);

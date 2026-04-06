@@ -177,6 +177,14 @@ export function useDietPlanner() {
         exclusionList: report?.exclusionList || [],
       });
 
+      // Check if plan was generated successfully
+      if (!result?.dailyPlans || result.dailyPlans.length === 0) {
+        setErrorMessage(result?.explanation || 'AI service temporarily unavailable. Please try again later.');
+        setStage(DIET_STATES.ERROR);
+        toast.error('Failed to generate diet plan. AI service temporarily unavailable.');
+        return;
+      }
+
       setPlanResult(result);
 
       // Save to Firestore
@@ -210,8 +218,8 @@ export function useDietPlanner() {
       setStage(DIET_STATES.PLAN_READY);
       toast.success('Diet plan generated and saved!');
     } catch (err) {
-      console.error('Diet plan generation failed:', err);
-      setErrorMessage(err.message || 'Failed to generate diet plan. Please try again.');
+      console.warn('Diet plan generation failed:', err.message);
+      setErrorMessage('Failed to generate diet plan. AI service temporarily unavailable. Please try again.');
       setStage(DIET_STATES.ERROR);
       toast.error('Failed to generate diet plan');
     }
