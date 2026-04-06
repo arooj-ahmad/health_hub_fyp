@@ -1,514 +1,104 @@
 /**
- * AI Service - Generalized AI Provider Interface
+ * AI Service — Backend API Client
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This is the REPLACEMENT for the old client-side AI service.
  * 
- * This service provides a unified interface for multiple AI providers.
- * Configure your preferred provider in the .env file using VITE_AI_PROVIDER.
- * 
- * Supported providers:
- * - gemini (Google Generative AI)
- * - openai (OpenAI)
- * - anthropic (Anthropic Claude)
- * 
- * To add a new provider:
- * 1. Add the provider configuration in .env.example
- * 2. Implement the provider-specific functions in this file
- * 3. Register the provider in the providers object
+ * BEFORE: Called Groq/Gemini/OpenAI APIs directly from the browser (INSECURE)
+ * NOW:    Proxies all AI requests through the HealthHub backend (SECURE)
+ *
+ * The public API is IDENTICAL to the old service:
+ *   - generateAIResponse(prompt, context)   → { success, content, error }
+ *   - generateAIResponseWithImage(prompt, imageFile) → { success, content, error }
+ *   - chatWithAI(messages)                  → { success, content, error }
+ *   - getCurrentProvider()                  → string
+ *
+ * This means all existing imports continue to work without changes.
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getAuth } from 'firebase/auth';
 
-// Get current AI provider from environment
-const AI_PROVIDER = import.meta.env.VITE_AI_PROVIDER || 'gemini';
+// ── Backend URL ─────────────────────────────────────────────────────────────
 
-// Validate API keys on startup
-const validateAPIKeys = () => {
-  const provider = AI_PROVIDER.toLowerCase();
-  
-  switch (provider) {
-    case 'gemini':
-      if (!import.meta.env.VITE_GEMINI_API_KEY) {
-        console.error('⚠️ VITE_GEMINI_API_KEY missing - AI features disabled');
-        return false;
-      }
-      break;
-    case 'openai':
-      if (!import.meta.env.VITE_OPENAI_API_KEY) {
-        console.error('⚠️ VITE_OPENAI_API_KEY missing - AI features disabled');
-        return false;
-      }
-      break;
-    case 'groq':
-      if (!import.meta.env.VITE_GROQ_API_KEY) {
-        console.error('⚠️ VITE_GROQ_API_KEY missing - AI features disabled');
-        return false;
-      }
-      break;
-    case 'anthropic':
-      if (!import.meta.env.VITE_ANTHROPIC_API_KEY) {
-        console.error('⚠️ VITE_ANTHROPIC_API_KEY missing - AI features disabled');
-        return false;
-      }
-      break;
-    default:
-      console.warn(`⚠️ Unknown AI provider: ${provider}`);
-      return false;
-  }
-  
-  console.log(`✓ AI Provider configured: ${provider}`);
-  return true;
-};
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-// Run validation on module load
-const isAIConfigured = validateAPIKeys();
+// ── Helper: get Firebase ID token for auth header ───────────────────────────
 
-// Provider-specific implementations
-const providers = {
-  gemini: {
-    generateResponse: geminiGenerateResponse,
-    generateResponseWithImage: geminiGenerateResponseWithImage,
-    chat: geminiChat,
-  },
-  openai: {
-    generateResponse: openaiGenerateResponse,
-    generateResponseWithImage: openaiGenerateResponseWithImage,
-    chat: openaiChat,
-  },
-  groq: {
-    generateResponse: groqGenerateResponse,
-    generateResponseWithImage: groqGenerateResponseWithImage,
-    chat: groqChat,
-  },
-  anthropic: {
-    generateResponse: anthropicGenerateResponse,
-    generateResponseWithImage: anthropicGenerateResponseWithImage,
-    chat: anthropicChat,
-  },
-};
-
-// =============================================================================
-// GEMINI PROVIDER IMPLEMENTATION
-// =============================================================================
-
-let genAI = null;
-function getGeminiClient() {
-  if (!genAI && import.meta.env.VITE_GEMINI_API_KEY) {
-    genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
-  }
-  return genAI;
-}
-
-async function geminiGenerateResponse(prompt, context = '') {
-  const client = getGeminiClient();
-  if (!client) throw new Error('Gemini API key not configured');
-  
-  const model = client.getGenerativeModel({ 
-    model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.0-flash-exp'
-  });
-
-  const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
-  const result = await model.generateContent(fullPrompt);
-  const response = await result.response;
-  return response.text();
-}
-
-async function geminiGenerateResponseWithImage(prompt, imageFile) {
-  const client = getGeminiClient();
-  if (!client) throw new Error('Gemini API key not configured');
-  
-  const model = client.getGenerativeModel({ 
-    model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.0-flash-exp'
-  });
-
-  const imageData = await fileToBase64(imageFile);
-  const result = await model.generateContent([
-    prompt, 
-    { inlineData: { data: imageData, mimeType: imageFile.type } }
-  ]);
-  const response = await result.response;
-  return response.text();
-}
-
-async function geminiChat(messages) {
-  const client = getGeminiClient();
-  if (!client) throw new Error('Gemini API key not configured');
-  
-  const model = client.getGenerativeModel({ 
-    model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.0-flash-exp'
-  });
-
-  const chat = model.startChat({
-    history: messages.slice(0, -1).map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : msg.role,
-      parts: [{ text: msg.content }]
-    }))
-  });
-
-  const lastMessage = messages[messages.length - 1];
-  const result = await chat.sendMessage(lastMessage.content);
-  const response = await result.response;
-  return response.text();
-}
-
-// =============================================================================
-// OPENAI PROVIDER IMPLEMENTATION
-// =============================================================================
-
-async function openaiGenerateResponse(prompt, context = '') {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OpenAI API key not configured');
-  
-  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4';
-  const baseUrl = import.meta.env.VITE_OPENAI_API_BASE_URL || 'https://api.openai.com/v1';
-  const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: fullPrompt }],
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI API error: ${response.statusText} - ${errorText}`);
-  }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
-}
-
-async function openaiGenerateResponseWithImage(prompt, imageFile) {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OpenAI API key not configured');
-  
-  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4-vision-preview';
-  const baseUrl = import.meta.env.VITE_OPENAI_API_BASE_URL || 'https://api.openai.com/v1';
-  const base64Image = await fileToBase64(imageFile);
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: `data:${imageFile.type};base64,${base64Image}` } }
-        ],
-      }],
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI API error: ${response.statusText} - ${errorText}`);
-  }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
-}
-
-async function openaiChat(messages) {
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OpenAI API key not configured');
-  
-  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4';
-  const baseUrl = import.meta.env.VITE_OPENAI_API_BASE_URL || 'https://api.openai.com/v1';
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: messages.map(msg => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content,
-      })),
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI API error: ${response.statusText} - ${errorText}`);
-  }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
-}
-
-// =============================================================================
-// GROQ PROVIDER IMPLEMENTATION (OpenAI-compatible API)
-// =============================================================================
-
-async function groqGenerateResponse(prompt, context = '') {
-  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-  if (!apiKey) {
-    return {
-      success: false,
-      error: 'Groq API key not configured',
-    };
-  }
-  
-  const model = import.meta.env.VITE_AI_MODEL || 'mixtral-8x7b-32768';
-  const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
-
+async function getAuthToken() {
   try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: fullPrompt }],
-        max_tokens: 2500,
-        temperature: 0.4,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = errorData?.error?.message || `HTTP ${response.status}`;
-      console.warn('Groq API warning (groqGenerateResponse):', errorMessage);
-      return {
-        success: false,
-        error: errorMessage,
-      };
+    const auth = getAuth();
+    const user = auth.currentUser;
+    if (!user) {
+      console.warn('[aiService] No authenticated user — requests may fail');
+      return null;
     }
-
-    const data = await response.json();
-    return {
-      success: true,
-      content: data.choices?.[0]?.message?.content || '',
-    };
+    return await user.getIdToken();
   } catch (err) {
-    console.warn('Groq network error (groqGenerateResponse):', err.message);
-    return {
-      success: false,
-      error: 'Network error - AI service unavailable',
-    };
+    console.warn('[aiService] Failed to get auth token:', err.message);
+    return null;
   }
 }
 
-async function groqGenerateResponseWithImage(prompt, imageFile) {
-  // Groq doesn't support image analysis yet, fallback to text-only
-  console.warn('Groq does not support image analysis. Processing as text-only prompt.');
-  return await groqGenerateResponse(prompt);
-}
+/**
+ * Make an authenticated request to the backend.
+ */
+async function backendFetch(endpoint, body) {
+  const token = await getAuthToken();
 
-async function groqChat(messages) {
-  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-  if (!apiKey) {
-    return {
-      success: false,
-      error: 'Groq API key not configured',
-    };
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
-  
-  const model = import.meta.env.VITE_AI_MODEL || 'mixtral-8x7b-32768';
 
-  try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: messages.map(msg => ({
-          role: msg.role === 'assistant' ? 'assistant' : 'user',
-          content: msg.content,
-        })),
-        max_tokens: 2500,
-        temperature: 0.4,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorMessage = errorData?.error?.message || `HTTP ${response.status}`;
-      console.warn('Groq API warning (groqChat):', errorMessage);
-      return {
-        success: false,
-        error: errorMessage,
-      };
-    }
-
-    const data = await response.json();
-    return {
-      success: true,
-      content: data.choices?.[0]?.message?.content || '',
-    };
-  } catch (err) {
-    console.warn('Groq network error (groqChat):', err.message);
-    return {
-      success: false,
-      error: 'Network error - AI service unavailable',
-    };
-  }
-}
-
-// =============================================================================
-// ANTHROPIC PROVIDER IMPLEMENTATION
-// =============================================================================
-
-async function anthropicGenerateResponse(prompt, context = '') {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('Anthropic API key not configured');
-  
-  const model = import.meta.env.VITE_ANTHROPIC_MODEL || 'claude-3-opus-20240229';
-  const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      messages: [{ role: 'user', content: fullPrompt }],
-    }),
+    headers,
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw new Error(`Anthropic API error: ${response.statusText}`);
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData?.error || `Backend error: HTTP ${response.status}`);
   }
 
   const data = await response.json();
-  return data.content[0].text;
-}
-
-async function anthropicGenerateResponseWithImage(prompt, imageFile) {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('Anthropic API key not configured');
-  
-  const model = import.meta.env.VITE_ANTHROPIC_MODEL || 'claude-3-opus-20240229';
-  const base64Image = await fileToBase64(imageFile);
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image', source: { type: 'base64', media_type: imageFile.type, data: base64Image } }
-        ],
-      }],
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Anthropic API error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  return data.content[0].text;
-}
-
-async function anthropicChat(messages) {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('Anthropic API key not configured');
-  
-  const model = import.meta.env.VITE_ANTHROPIC_MODEL || 'claude-3-opus-20240229';
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      messages: messages.map(msg => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content,
-      })),
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Anthropic API error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  return data.content[0].text;
+  return data;
 }
 
 // =============================================================================
-// HELPER FUNCTIONS
-// =============================================================================
-
-async function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-function getProvider() {
-  const provider = providers[AI_PROVIDER];
-  if (!provider) {
-    throw new Error(`Unsupported AI provider: ${AI_PROVIDER}. Supported providers: ${Object.keys(providers).join(', ')}`);
-  }
-  return provider;
-}
-
-// =============================================================================
-// PUBLIC API - Unified interface for all providers
+// PUBLIC API — Same interface as the old service
 // =============================================================================
 
 /**
- * Generate an AI response for a given prompt
+ * Generate an AI response for a given prompt.
+ * Routes through: POST /api/chat (single-message mode)
+ *
  * @param {string} prompt - The prompt to send to the AI
  * @param {string} context - Optional context to prepend to the prompt
- * @returns {Promise<{success: boolean, content: string, error?: string}>} The AI's response
+ * @returns {Promise<{success: boolean, content: string, error?: string}>}
  */
 export const generateAIResponse = async (prompt, context = '') => {
   try {
-    const provider = getProvider();
-    const result = await provider.generateResponse(prompt, context);
-    
-    // Check if result has success property (safe API format)
-    if (result && typeof result === 'object' && 'success' in result) {
-      return result;
+    const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
+
+    const data = await backendFetch('/api/chat', {
+      messages: [{ role: 'user', content: fullPrompt }],
+    });
+
+    // Backend returns { success, data: { content } }
+    if (data?.success && data?.data?.content) {
+      return {
+        success: true,
+        content: data.data.content,
+      };
     }
-    
-    // Legacy format - wrap in success object
+
     return {
-      success: true,
-      content: result || '',
+      success: false,
+      content: '',
+      error: data?.error || 'No content in response',
     };
   } catch (error) {
-    console.warn('AI Provider warning:', error.message);
+    console.warn('AI Service error:', error.message);
     return {
       success: false,
       content: '',
@@ -518,58 +108,46 @@ export const generateAIResponse = async (prompt, context = '') => {
 };
 
 /**
- * Generate an AI response for a prompt with an image
+ * Generate an AI response for a prompt with an image.
+ * NOTE: Image analysis currently falls back to text-only prompt
+ * since the backend doesn't handle file uploads yet.
+ *
  * @param {string} prompt - The prompt to send to the AI
- * @param {File} imageFile - The image file to analyze
- * @returns {Promise<{success: boolean, content: string, error?: string}>} The AI's response
+ * @param {File} imageFile - The image file (currently unused, text extraction happens client-side)
+ * @returns {Promise<{success: boolean, content: string, error?: string}>}
  */
 export const generateAIResponseWithImage = async (prompt, imageFile) => {
-  try {
-    const provider = getProvider();
-    const result = await provider.generateResponseWithImage(prompt, imageFile);
-    
-    // Check if result has success property (safe API format)
-    if (result && typeof result === 'object' && 'success' in result) {
-      return result;
-    }
-    
-    // Legacy format - wrap in success object
-    return {
-      success: true,
-      content: result || '',
-    };
-  } catch (error) {
-    console.warn('AI Provider warning:', error.message);
-    return {
-      success: false,
-      content: '',
-      error: error.message || 'AI service failed with image',
-    };
-  }
+  // For now, fall back to text-only generation
+  // Future: implement multipart upload to backend
+  console.warn('[aiService] Image upload not yet supported by backend — using text-only mode');
+  return await generateAIResponse(prompt);
 };
 
 /**
- * Have a conversation with the AI
- * @param {Array<{role: string, content: string}>} messages - Array of messages in the conversation
- * @returns {Promise<{success: boolean, content: string, error?: string}>} The AI's response
+ * Have a conversation with the AI.
+ * Routes through: POST /api/chat
+ *
+ * @param {Array<{role: string, content: string}>} messages
+ * @returns {Promise<{success: boolean, content: string, error?: string}>}
  */
 export const chatWithAI = async (messages) => {
   try {
-    const provider = getProvider();
-    const result = await provider.chat(messages);
-    
-    // Check if result has success property (safe API format)
-    if (result && typeof result === 'object' && 'success' in result) {
-      return result;
+    const data = await backendFetch('/api/chat', { messages });
+
+    if (data?.success && data?.data?.content) {
+      return {
+        success: true,
+        content: data.data.content,
+      };
     }
-    
-    // Legacy format - wrap in success object
+
     return {
-      success: true,
-      content: result || '',
+      success: false,
+      content: '',
+      error: data?.error || 'No content in response',
     };
   } catch (error) {
-    console.warn('AI Provider warning:', error.message);
+    console.warn('AI Chat error:', error.message);
     return {
       success: false,
       content: '',
@@ -579,13 +157,12 @@ export const chatWithAI = async (messages) => {
 };
 
 /**
- * Get the current AI provider name
- * @returns {string} The current provider name
+ * Get the current AI provider name.
+ * Now returns 'backend' since the provider is configured server-side.
  */
-export const getCurrentProvider = () => AI_PROVIDER;
+export const getCurrentProvider = () => 'backend';
 
 /**
- * Get list of supported AI providers
- * @returns {string[]} Array of supported provider names
+ * Get list of supported AI providers.
  */
-export const getSupportedProviders = () => Object.keys(providers);
+export const getSupportedProviders = () => ['backend'];
